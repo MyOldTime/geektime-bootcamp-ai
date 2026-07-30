@@ -1,9 +1,10 @@
 """API request/response schemas with camelCase aliases."""
 
-from pydantic import BaseModel, Field
-from typing import Literal, Any
 from datetime import datetime
-from app.models.query import QuerySource
+from enum import Enum
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
 
 
 # Database Connection Schemas
@@ -11,7 +12,14 @@ class DatabaseConnectionInput(BaseModel):
     """Input schema for creating/updating database connection."""
 
     url: str = Field(..., description="Database connection URL (PostgreSQL or MySQL)")
-    db_type: str | None = Field(default=None, alias="dbType", description="Database type (postgresql or mysql). Auto-detected from URL if not provided.")
+    db_type: str | None = Field(
+        default=None,
+        alias="dbType",
+        description=(
+            "Database type (postgresql or mysql). "
+            "Auto-detected from URL if not provided."
+        ),
+    )
     description: str | None = Field(default=None, max_length=200)
 
 
@@ -83,6 +91,76 @@ class QueryResult(BaseModel):
     row_count: int = Field(..., alias="rowCount")
     execution_time_ms: int = Field(..., alias="executionTimeMs")
     sql: str
+
+
+class ExportFormat(str, Enum):
+    """Supported query result export formats."""
+
+    CSV = "csv"
+    JSON = "json"
+
+
+class ExportOptions(BaseModel):
+    """Shared options for downloadable result files."""
+
+    format: ExportFormat
+    file_name: str | None = Field(
+        default=None,
+        alias="fileName",
+        max_length=100,
+        pattern=r"^[^/\\\r\n]+$",
+    )
+
+
+class QueryExportInput(QueryInput, ExportOptions):
+    """Execute a SQL query and immediately export its result."""
+
+
+class ResultExportInput(ExportOptions):
+    """Export a result already returned by the query API."""
+
+    columns: list[QueryColumn] = Field(..., max_length=200)
+    rows: list[dict[str, Any]] = Field(..., max_length=1000)
+
+
+class ExportAssistantMessage(BaseModel):
+    """One turn in an export assistant conversation."""
+
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=1000)
+
+
+class ExportAssistantInput(BaseModel):
+    """Conversation and page context sent to the export assistant."""
+
+    messages: list[ExportAssistantMessage] = Field(
+        ...,
+        min_length=1,
+        max_length=20,
+    )
+    current_sql: str | None = Field(
+        default=None,
+        alias="currentSql",
+        max_length=10000,
+    )
+    has_current_result: bool = Field(default=False, alias="hasCurrentResult")
+
+
+class ExportAssistantAction(str, Enum):
+    """Actions the export assistant can ask the browser to perform."""
+
+    CHAT = "chat"
+    EXPORT_CURRENT = "export_current"
+    EXECUTE_EXPORT = "execute_export"
+
+
+class ExportAssistantResponse(BaseModel):
+    """Structured conversational response and optional export action."""
+
+    message: str
+    action: ExportAssistantAction = ExportAssistantAction.CHAT
+    format: ExportFormat | None = None
+    sql: str | None = None
 
 
 class QueryHistoryEntry(BaseModel):

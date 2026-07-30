@@ -8,7 +8,9 @@ class Settings(BaseSettings):
     """Application settings."""
 
     # OpenAI API
+    openai_base_url: str
     openai_api_key: str
+    openai_model_name: str
 
     # Data directory
     db_query_data_dir: str = str(Path.home() / ".db_query")

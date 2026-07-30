@@ -14,31 +14,35 @@ import {
   Typography,
   Empty,
   Tabs,
-  Modal,
+  Dropdown,
 } from "antd";
+import type { MenuProps } from "antd";
 import {
-  PlayCircleOutlined,
-  SearchOutlined,
   DatabaseOutlined,
+  DownloadOutlined,
+  FileTextOutlined,
+  PlayCircleOutlined,
   ReloadOutlined,
-  ExclamationCircleOutlined,
+  SearchOutlined,
 } from "@ant-design/icons";
 import { apiClient } from "../services/api";
+import {
+  executeAndExportQuery,
+  exportQueryResult,
+} from "../services/export";
 import { DatabaseMetadata, TableMetadata } from "../types/metadata";
+import {
+  ExportFormat,
+  ExportReceipt,
+  QueryResult,
+} from "../types/query";
 import { MetadataTree } from "../components/MetadataTree";
 import { SqlEditor } from "../components/SqlEditor";
 import { DatabaseSidebar } from "../components/DatabaseSidebar";
+import { ExportAssistant } from "../components/ExportAssistant";
 import { NaturalLanguageInput } from "../components/NaturalLanguageInput";
 
 const { Title, Text } = Typography;
-
-interface QueryResult {
-  columns: Array<{ name: string; dataType: string }>;
-  rows: Array<Record<string, any>>;
-  rowCount: number;
-  executionTimeMs: number;
-  sql: string;
-}
 
 export const Home: React.FC = () => {
   const [selectedDatabase, setSelectedDatabase] = useState<string | null>(null);
@@ -51,10 +55,23 @@ export const Home: React.FC = () => {
   const [activeTab, setActiveTab] = useState<"manual" | "natural">("manual");
   const [generatingSql, setGeneratingSql] = useState(false);
   const [nlError, setNlError] = useState<string | null>(null);
+  const [exportingFormat, setExportingFormat] =
+    useState<ExportFormat | null>(null);
+
+  const handleSelectDatabase = (databaseName: string): void => {
+    setQueryResult(null);
+    setMetadata(null);
+    setSelectedDatabase(databaseName);
+  };
 
   useEffect(() => {
+    setQueryResult(null);
+    setNlError(null);
+    setSql("SELECT * FROM ");
     if (selectedDatabase) {
       loadMetadata();
+    } else {
+      setMetadata(null);
     }
   }, [selectedDatabase]);
 
@@ -136,89 +153,65 @@ export const Home: React.FC = () => {
     }
   };
 
-  const handleExportCSV = () => {
-    if (!queryResult || queryResult.rows.length === 0) {
-      message.warning("No data to export");
-      return;
+  const handleExportCurrent = async (
+    format: ExportFormat
+  ): Promise<ExportReceipt> => {
+    if (!selectedDatabase || !queryResult) {
+      const error = new Error("No query result is available to export");
+      message.warning(error.message);
+      throw error;
     }
 
-    // Warn if result is large
-    if (queryResult.rows.length > 10000) {
-      Modal.confirm({
-        title: "Large Dataset Warning",
-        icon: <ExclamationCircleOutlined />,
-        content: `You are about to export ${queryResult.rowCount.toLocaleString()} rows. This may take a while and consume memory. Continue?`,
-        onOk: () => exportToCSV(),
-      });
-    } else {
-      exportToCSV();
-    }
-  };
-
-  const exportToCSV = () => {
-    if (!queryResult) return;
-
-    // Generate CSV content
-    const headers = queryResult.columns.map((col) => col.name);
-    const csvRows = [headers.join(",")];
-
-    queryResult.rows.forEach((row) => {
-      const values = headers.map((header) => {
-        const value = row[header];
-        // Handle null/undefined
-        if (value === null || value === undefined) return "";
-        // Escape quotes and wrap in quotes if contains comma or quote
-        const stringValue = String(value);
-        if (stringValue.includes(",") || stringValue.includes('"') || stringValue.includes("\n")) {
-          return `"${stringValue.replace(/"/g, '""')}"`;
-        }
-        return stringValue;
-      });
-      csvRows.push(values.join(","));
-    });
-
-    const csvContent = csvRows.join("\n");
-    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
-    const link = document.createElement("a");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-    link.href = URL.createObjectURL(blob);
-    link.download = `${selectedDatabase}_${timestamp}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    message.success(`Exported ${queryResult.rowCount} rows to CSV`);
-  };
-
-  const handleExportJSON = () => {
-    if (!queryResult || queryResult.rows.length === 0) {
-      message.warning("No data to export");
-      return;
-    }
-
-    // Warn if result is large
-    if (queryResult.rows.length > 10000) {
-      Modal.confirm({
-        title: "Large Dataset Warning",
-        icon: <ExclamationCircleOutlined />,
-        content: `You are about to export ${queryResult.rowCount.toLocaleString()} rows. This may take a while and consume memory. Continue?`,
-        onOk: () => exportToJSON(),
-      });
-    } else {
-      exportToJSON();
+    setExportingFormat(format);
+    try {
+      const receipt = await exportQueryResult(
+        selectedDatabase,
+        queryResult,
+        format
+      );
+      message.success(
+        `Exported ${receipt.rowCount.toLocaleString()} rows to ${format.toUpperCase()}`
+      );
+      return receipt;
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Export failed");
+      throw error;
+    } finally {
+      setExportingFormat(null);
     }
   };
 
-  const exportToJSON = () => {
-    if (!queryResult) return;
+  const handleExecuteAndExport = async (
+    format: ExportFormat,
+    sqlOverride?: string
+  ): Promise<ExportReceipt> => {
+    const exportSql = sqlOverride?.trim() || sql.trim();
+    if (!selectedDatabase || !exportSql) {
+      const error = new Error("Please select a database and enter a SQL query");
+      message.warning(error.message);
+      throw error;
+    }
 
-    const jsonContent = JSON.stringify(queryResult.rows, null, 2);
-    const blob = new Blob([jsonContent], { type: "application/json;charset=utf-8;" });
-    const link = document.createElement("a");
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, -5);
-    link.href = URL.createObjectURL(blob);
-    link.download = `${selectedDatabase}_${timestamp}.json`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-    message.success(`Exported ${queryResult.rowCount} rows to JSON`);
+    if (sqlOverride?.trim()) {
+      setSql(exportSql);
+    }
+    setExportingFormat(format);
+    try {
+      const receipt = await executeAndExportQuery(
+        selectedDatabase,
+        exportSql,
+        format
+      );
+      message.success(
+        `Query executed and ${receipt.rowCount.toLocaleString()} rows exported to ${format.toUpperCase()}`
+      );
+      return receipt;
+    } catch (error) {
+      message.error(error instanceof Error ? error.message : "Export failed");
+      throw error;
+    } finally {
+      setExportingFormat(null);
+    }
   };
 
   const tableColumns =
@@ -229,68 +222,103 @@ export const Home: React.FC = () => {
       ellipsis: true,
     })) || [];
 
+  const runExportMenu: MenuProps = {
+    items: [
+      {
+        key: "csv",
+        icon: <FileTextOutlined />,
+        label: "RUN + EXPORT CSV",
+      },
+      {
+        key: "json",
+        icon: <FileTextOutlined />,
+        label: "RUN + EXPORT JSON",
+      },
+    ],
+    onClick: ({ key }) => {
+      void handleExecuteAndExport(key as ExportFormat).catch(() => undefined);
+    },
+  };
+
+  const exportAssistant = (
+    <ExportAssistant
+      databaseName={selectedDatabase}
+      sql={sql}
+      result={queryResult}
+      busy={executing || exportingFormat !== null}
+      onExportCurrent={handleExportCurrent}
+      onExecuteAndExport={handleExecuteAndExport}
+    />
+  );
+
   // No database selected state
   if (!selectedDatabase) {
     return (
-      <div style={{ display: "flex", height: "100vh" }}>
-        <DatabaseSidebar
-          selectedDatabase={selectedDatabase}
-          onSelectDatabase={setSelectedDatabase}
-        />
-        <div
-          style={{
-            marginLeft: 280,
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "#F4EFEA",
-          }}
-        >
-          <Empty
-            image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description={
-              <Space direction="vertical" size={16}>
-                <Title level={3} style={{ textTransform: "uppercase" }}>
-                  NO DATABASE SELECTED
-                </Title>
-                <Text type="secondary" style={{ fontSize: 15 }}>
-                  Add a database from the sidebar to get started
-                </Text>
-              </Space>
-            }
+      <>
+        <div style={{ display: "flex", height: "100vh" }}>
+          <DatabaseSidebar
+            selectedDatabase={selectedDatabase}
+            onSelectDatabase={handleSelectDatabase}
           />
+          <div
+            style={{
+              marginLeft: 280,
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#F4EFEA",
+            }}
+          >
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={
+                <Space direction="vertical" size={16}>
+                  <Title level={3} style={{ textTransform: "uppercase" }}>
+                    NO DATABASE SELECTED
+                  </Title>
+                  <Text type="secondary" style={{ fontSize: 15 }}>
+                    Add a database from the sidebar to get started
+                  </Text>
+                </Space>
+              }
+            />
+          </div>
         </div>
-      </div>
+        {exportAssistant}
+      </>
     );
   }
 
   // Loading state
   if (loading) {
     return (
-      <div style={{ display: "flex", height: "100vh" }}>
-        <DatabaseSidebar
-          selectedDatabase={selectedDatabase}
-          onSelectDatabase={setSelectedDatabase}
-        />
-        <div
-          style={{
-            marginLeft: 280,
-            flex: 1,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            background: "#F4EFEA",
-          }}
-        >
-          <Spin size="large" />
+      <>
+        <div style={{ display: "flex", height: "100vh" }}>
+          <DatabaseSidebar
+            selectedDatabase={selectedDatabase}
+            onSelectDatabase={handleSelectDatabase}
+          />
+          <div
+            style={{
+              marginLeft: 280,
+              flex: 1,
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "#F4EFEA",
+            }}
+          >
+            <Spin size="large" />
+          </div>
         </div>
-      </div>
+        {exportAssistant}
+      </>
     );
   }
 
   if (!metadata) {
-    return null;
+    return exportAssistant;
   }
 
   return (
@@ -298,7 +326,7 @@ export const Home: React.FC = () => {
       {/* Database List Sidebar */}
       <DatabaseSidebar
         selectedDatabase={selectedDatabase}
-        onSelectDatabase={setSelectedDatabase}
+        onSelectDatabase={handleSelectDatabase}
       />
 
       {/* Schema Sidebar - Full Height */}
@@ -525,21 +553,35 @@ export const Home: React.FC = () => {
           }
           extra={
             activeTab === "manual" ? (
-              <Button
-                type="primary"
-                icon={<PlayCircleOutlined />}
-                onClick={handleExecuteQuery}
-                loading={executing}
-                size="large"
-                style={{
-                  height: 40,
-                  paddingLeft: 20,
-                  paddingRight: 20,
-                  fontWeight: 700,
-                }}
-              >
-                EXECUTE
-              </Button>
+              <Space size={8}>
+                <Button
+                  type="primary"
+                  icon={<PlayCircleOutlined />}
+                  onClick={handleExecuteQuery}
+                  loading={executing}
+                  disabled={exportingFormat !== null}
+                  size="large"
+                  style={{
+                    height: 40,
+                    paddingLeft: 20,
+                    paddingRight: 20,
+                    fontWeight: 700,
+                  }}
+                >
+                  EXECUTE
+                </Button>
+                <Dropdown.Button
+                  menu={runExportMenu}
+                  onClick={() =>
+                    void handleExecuteAndExport("csv").catch(() => undefined)
+                  }
+                  loading={exportingFormat !== null}
+                  disabled={executing || !sql.trim()}
+                  size="large"
+                >
+                  <DownloadOutlined /> RUN + EXPORT CSV
+                </Dropdown.Button>
+              </Space>
             ) : null
           }
           style={{ borderWidth: 2, borderColor: "#000000", marginBottom: 16 }}
@@ -626,14 +668,24 @@ export const Home: React.FC = () => {
               <Space size={8}>
                 <Button
                   size="small"
-                  onClick={handleExportCSV}
+                  icon={<FileTextOutlined />}
+                  loading={exportingFormat === "csv"}
+                  disabled={executing || exportingFormat !== null}
+                  onClick={() =>
+                    void handleExportCurrent("csv").catch(() => undefined)
+                  }
                   style={{ fontSize: 12, fontWeight: 700 }}
                 >
                   EXPORT CSV
                 </Button>
                 <Button
                   size="small"
-                  onClick={handleExportJSON}
+                  icon={<FileTextOutlined />}
+                  loading={exportingFormat === "json"}
+                  disabled={executing || exportingFormat !== null}
+                  onClick={() =>
+                    void handleExportCurrent("json").catch(() => undefined)
+                  }
                   style={{ fontSize: 12, fontWeight: 700 }}
                 >
                   EXPORT JSON
@@ -659,6 +711,7 @@ export const Home: React.FC = () => {
           </Card>
         )}
       </div>
+      {exportAssistant}
     </div>
   );
 };

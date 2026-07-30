@@ -1,0 +1,238 @@
+.export-assistant__launcher {
+  position: fixed;
+  right: 24px;
+  bottom: 24px;
+  z-index: 999;
+  min-width: 126px;
+  height: 52px;
+  padding: 0 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  border: 2px solid #000000;
+  border-radius: 2px;
+  background: #ffde00;
+  color: #383838;
+  box-shadow: 5px 5px 0 #000000;
+  cursor: pointer;
+  font: 700 14px/1 var(--font-family-primary);
+  letter-spacing: 0.02em;
+  transition:
+    transform 120ms ease,
+    box-shadow 120ms ease;
+}
+
+.export-assistant__launcher:hover {
+  transform: translate(3px, 3px);
+  box-shadow: 2px 2px 0 #000000;
+}
+
+.export-assistant__launcher:focus-visible,
+.export-assistant__nudge button:focus-visible {
+  outline: 3px solid #2ba5ff;
+  outline-offset: 3px;
+}
+
+.export-assistant__launcher > .anticon {
+  font-size: 20px;
+}
+
+.export-assistant__launcher i {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  width: 13px;
+  height: 13px;
+  border: 2px solid #000000;
+  border-radius: 50%;
+  background: #16aa98;
+}
+
+.export-assistant__nudge {
+  position: fixed;
+  right: 24px;
+  bottom: 88px;
+  z-index: 999;
+  width: min(330px, calc(100vw - 48px));
+  display: flex;
+  align-items: stretch;
+  border: 2px solid #000000;
+  border-radius: 2px;
+  background: #ffffff;
+  box-shadow: 5px 5px 0 #000000;
+  animation: export-assistant-in 180ms ease-out;
+}
+
+.export-assistant__nudge-main,
+.export-assistant__nudge-close {
+  border: 0;
+  background: transparent;
+  color: #383838;
+  cursor: pointer;
+}
+
+.export-assistant__nudge-main {
+  flex: 1;
+  padding: 14px 12px 14px 16px;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  text-align: left;
+}
+
+.export-assistant__nudge-main > .anticon {
+  font-size: 22px;
+  color: #2ba5ff;
+}
+
+.export-assistant__nudge-main span {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 12px;
+  color: #a1a1a1;
+}
+
+.export-assistant__nudge-main strong {
+  color: #383838;
+  font-size: 14px;
+}
+
+.export-assistant__nudge-close {
+  width: 40px;
+  border-left: 1px solid #e4d6c3;
+}
+
+.export-assistant__avatar {
+  width: 38px;
+  height: 38px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px solid #000000;
+  border-radius: 2px;
+  background: #ffde00;
+  font-size: 20px;
+}
+
+.export-assistant__context {
+  padding: 12px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #e4d6c3;
+  background: #f8f8f7;
+}
+
+.export-assistant__context > div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.export-assistant__context strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.export-assistant__messages {
+  flex: 1;
+  min-height: 220px;
+  padding: 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow-y: auto;
+  background:
+    linear-gradient(#e4d6c3 1px, transparent 1px),
+    linear-gradient(90deg, #e4d6c3 1px, transparent 1px),
+    #f4efea;
+  background-size: 24px 24px;
+}
+
+.export-assistant__message {
+  max-width: 88%;
+  padding: 10px 12px;
+  border: 2px solid #000000;
+  border-radius: 2px;
+  background: #ffffff;
+  color: #383838;
+  font-size: 14px;
+  line-height: 1.55;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.12);
+}
+
+.export-assistant__message--assistant {
+  align-self: flex-start;
+}
+
+.export-assistant__message--user {
+  align-self: flex-end;
+  background: #6fc2ff;
+}
+
+.export-assistant__actions {
+  padding: 14px 16px;
+  display: grid;
+  gap: 12px;
+  border-top: 2px solid #000000;
+  background: #ffffff;
+}
+
+.export-assistant__action-group {
+  display: grid;
+  gap: 6px;
+}
+
+.export-assistant__action-group .ant-btn {
+  flex: 1;
+}
+
+.export-assistant__composer {
+  padding: 12px 16px 16px;
+  display: grid;
+  grid-template-columns: 1fr 40px;
+  gap: 8px;
+  align-items: end;
+  border-top: 1px solid #e4d6c3;
+  background: #ffffff;
+}
+
+.export-assistant__composer .ant-btn {
+  width: 40px;
+  min-width: 40px;
+  padding: 0;
+}
+
+@keyframes export-assistant-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (max-width: 640px) {
+  .export-assistant__launcher {
+    right: 16px;
+    bottom: 16px;
+    min-width: 52px;
+    padding: 0 14px;
+  }
+
+  .export-assistant__launcher span {
+    display: none;
+  }
+
+  .export-assistant__nudge {
+    right: 16px;
+    bottom: 80px;
+    width: calc(100vw - 32px);
+  }
+}

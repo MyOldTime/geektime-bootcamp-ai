@@ -2,9 +2,10 @@
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+
+from app.api.v1 import databases, queries
 from app.config import settings
 from app.database import init_db
-from app.api.v1 import databases, queries
 from app.services.db_connection import close_all_connection_pools
 
 # Initialize database
@@ -24,6 +25,12 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=[
+        "Content-Disposition",
+        "X-Export-Format",
+        "X-Row-Count",
+        "X-Execution-Time-Ms",
+    ],
 )
 
 # Register routers

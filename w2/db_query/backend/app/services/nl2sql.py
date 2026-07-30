@@ -13,8 +13,11 @@ class NaturalLanguageToSQLService:
 
     def __init__(self):
         """Initialize OpenAI client."""
-        self.client = AsyncOpenAI(api_key=settings.openai_api_key)
-        self.model = "gpt-4o-mini"  # Cost-effective model for SQL generation
+        self.client = AsyncOpenAI(
+            base_url=settings.openai_base_url,
+            api_key=settings.openai_api_key
+        )
+        self.model = settings.openai_model_name  # Cost-effective model for SQL generation
 
     def _build_prompt(
         self, user_prompt: str, metadata: dict, db_type: DatabaseType = DatabaseType.POSTGRESQL
