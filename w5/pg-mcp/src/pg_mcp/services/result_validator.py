@@ -12,6 +12,7 @@ from openai import AsyncOpenAI
 from pg_mcp.config.settings import OpenAIConfig, ValidationConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
 from pg_mcp.models.query import ResultValidationResult
+from pg_mcp.observability.tracing import record_tokens_used
 from pg_mcp.prompts.result_validation import (
     RESULT_VALIDATION_SYSTEM_PROMPT,
     build_validation_prompt,
@@ -55,7 +56,9 @@ class ResultValidator:
         self.validation_config = validation_config
         self.client = AsyncOpenAI(
             api_key=openai_config.api_key.get_secret_value(),
+            base_url=openai_config.base_url,
             timeout=validation_config.timeout_seconds,
+            max_retries=0,
         )
 
     async def validate(
@@ -128,6 +131,8 @@ class ResultValidator:
                 temperature=0.0,  # Use deterministic output for validation
                 response_format={"type": "json_object"},  # Ensure JSON response
             )
+            if response.usage:
+                record_tokens_used(response.usage.total_tokens)
 
             # Extract and parse the response
             if not response.choices:

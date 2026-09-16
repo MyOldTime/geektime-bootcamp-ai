@@ -9,6 +9,7 @@ from typing import ClassVar
 
 import sqlglot
 from sqlglot import exp
+from sqlglot.optimizer.scope import Scope, traverse_scope
 
 from pg_mcp.config.settings import SecurityConfig
 from pg_mcp.models.errors import SecurityViolationError, SQLParseError
@@ -26,13 +27,16 @@ class SQLValidator:
     """
 
     # Allowed statement types at the top level (including set operations)
-    ALLOWED_STATEMENT_TYPES: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except
-    }
+    ALLOWED_STATEMENT_TYPES: ClassVar = {exp.Select, exp.Union, exp.Intersect, exp.Except}
 
     # Allowed top-level expressions (including CTEs)
     ALLOWED_TOP_LEVEL: ClassVar = {
-        exp.Select, exp.Union, exp.Intersect, exp.Except, exp.With, exp.Subquery
+        exp.Select,
+        exp.Union,
+        exp.Intersect,
+        exp.Except,
+        exp.With,
+        exp.Subquery,
     }
 
     # Forbidden statement types
@@ -72,6 +76,20 @@ class SQLValidator:
         "pg_execute_sql",
         "copy_from",
         "copy_to",
+        "set_config",
+        "query_to_xml",
+        "query_to_xmlschema",
+        "query_to_xml_and_xmlschema",
+        "table_to_xml",
+        "table_to_xmlschema",
+        "table_to_xml_and_xmlschema",
+        "schema_to_xml",
+        "schema_to_xmlschema",
+        "schema_to_xml_and_xmlschema",
+        "database_to_xml",
+        "database_to_xmlschema",
+        "database_to_xml_and_xmlschema",
+        "cursor_to_xml",
     }
 
     def __init__(
@@ -79,7 +97,7 @@ class SQLValidator:
         config: SecurityConfig,
         blocked_tables: list[str] | None = None,
         blocked_columns: list[str] | None = None,
-        allow_explain: bool = False,
+        allow_explain: bool | None = None,
     ) -> None:
         """Initialize SQL validator.
 
@@ -90,9 +108,14 @@ class SQLValidator:
             allow_explain: Whether to allow EXPLAIN statements.
         """
         self.config = config
-        self.blocked_tables = {t.lower() for t in (blocked_tables or [])}
-        self.blocked_columns = {c.lower() for c in (blocked_columns or [])}
-        self.allow_explain = allow_explain
+        self.blocked_tables = {
+            t.lower() for t in (config.blocked_tables if blocked_tables is None else blocked_tables)
+        }
+        self.blocked_columns = {
+            c.lower()
+            for c in (config.blocked_columns if blocked_columns is None else blocked_columns)
+        }
+        self.allow_explain = config.allow_explain if allow_explain is None else allow_explain
 
         # Combine built-in dangerous functions with custom blocked functions
         self.blocked_functions = self.BUILTIN_DANGEROUS_FUNCTIONS | {
@@ -156,11 +179,28 @@ class SQLValidator:
             if cmd_name == "EXPLAIN":
                 if not self.allow_explain:
                     raise SecurityViolationError("EXPLAIN statements are not allowed")
-                # EXPLAIN is read-only and safe - it only shows query plans without executing.
-                # sqlglot 28.5.0 cannot parse EXPLAIN syntax reliably (falls back to Command),
-                # so we don't attempt to validate the inner query string to avoid false positives.
-                # Even "EXPLAIN DELETE" is safe as it won't actually delete data.
-                return None
+                # SQLGlot treats EXPLAIN as opaque text. Locate its inner statement
+                # using tokens (so comments and quoted strings cannot hide a write).
+                inner = str(statement.expression.this)
+                depth = 0
+                for token in sqlglot.tokenize(inner, read="postgres"):
+                    if token.text == "(":
+                        depth += 1
+                    elif token.text == ")":
+                        depth -= 1
+                    elif depth == 0 and token.text.upper() in {
+                        "SELECT",
+                        "WITH",
+                        "INSERT",
+                        "UPDATE",
+                        "DELETE",
+                        "MERGE",
+                        "COPY",
+                    }:
+                        return self.validate_or_raise(inner[token.start :])
+                    elif depth == 0 and token.text.upper() not in {"ANALYZE", "ANALYSE", "VERBOSE"}:
+                        raise SecurityViolationError("Unsupported EXPLAIN syntax")
+                raise SQLParseError("EXPLAIN must contain a query")
             else:
                 # Other commands are not allowed
                 raise SecurityViolationError(
@@ -180,6 +220,10 @@ class SQLValidator:
         # Perform security checks
         if error := self._check_statement_type(main_query):
             raise SecurityViolationError(error)
+
+        for node in statement.walk():
+            if isinstance(node, (*self.FORBIDDEN_STATEMENT_TYPES, exp.Into, exp.Lock)):
+                raise SecurityViolationError(f"{type(node).__name__.upper()} is not allowed")
 
         if error := self._check_dangerous_functions(statement):
             raise SecurityViolationError(error)
@@ -226,7 +270,7 @@ class SQLValidator:
         """
         # Find all function calls in the query
         for func in statement.find_all(exp.Func):
-            func_name = func.name.lower() if func.name else ""
+            func_name = (func.name or func.sql_name()).lower()
 
             if func_name in self.blocked_functions:
                 return f"Function '{func_name}' is blocked for security reasons"
@@ -245,12 +289,12 @@ class SQLValidator:
         if not self.blocked_tables:
             return None
 
-        # Find all table references
-        for table in statement.find_all(exp.Table):
-            table_name = table.name.lower() if table.name else ""
-
-            if table_name in self.blocked_tables:
-                return f"Access to table '{table_name}' is not allowed"
+        for scope in traverse_scope(statement):
+            for source in scope.sources.values():
+                if isinstance(source, exp.Table):
+                    for blocked in self.blocked_tables:
+                        if self._matches_table(source, blocked):
+                            return f"Access to table '{blocked}' is not allowed"
 
         return None
 
@@ -266,21 +310,75 @@ class SQLValidator:
         if not self.blocked_columns:
             return None
 
-        # Find all column references
-        for column in statement.find_all(exp.Column):
-            column_name = column.name.lower() if column.name else ""
-
-            # Check for exact match
-            if column_name in self.blocked_columns:
-                return f"Access to column '{column_name}' is not allowed"
-
-            # Check for qualified column names (table.column)
-            if column.table:
-                qualified_name = f"{column.table.lower()}.{column_name}"
-                if qualified_name in self.blocked_columns:
-                    return f"Access to column '{qualified_name}' is not allowed"
+        for scope in traverse_scope(statement):
+            sources = {name.lower(): source for name, source in scope.sources.items()}
+            tables = [source for source in sources.values() if isinstance(source, exp.Table)]
+            restricted = {
+                name
+                for name in self.blocked_columns
+                if "." not in name
+                or any(self._matches_table(table, name.rsplit(".", 1)[0]) for table in tables)
+            }
+            if restricted:
+                if any(table.args.get("alias") and table.args["alias"].columns for table in tables):
+                    return "Table column aliases are not allowed with blocked columns"
+                # A wildcard or whole-row expression may expose every protected column.
+                # Require explicit projections instead of silently returning sensitive fields.
+                for projection in scope.expression.selects:
+                    if projection.is_star:
+                        return "Wildcard projection is not allowed with blocked columns"
+                if scope.stars:
+                    return "Wildcard projection is not allowed with blocked columns"
+            for column in scope.columns:
+                name = column.name.lower()
+                if not column.table and name in sources and restricted:
+                    return "Whole-row references are not allowed with blocked columns"
+                candidates = tables
+                if not column.table:
+                    parent = scope.parent
+                    while parent is not None:
+                        candidates = candidates + [
+                            source
+                            for source in parent.sources.values()
+                            if isinstance(source, exp.Table)
+                        ]
+                        parent = parent.parent
+                if column.table:
+                    owner: Scope | None = scope
+                    source = None
+                    while owner is not None:
+                        source = next(
+                            (
+                                v
+                                for k, v in owner.sources.items()
+                                if k.lower() == column.table.lower()
+                            ),
+                            None,
+                        )
+                        if source is not None:
+                            break
+                        owner = owner.parent
+                    candidates = [source] if isinstance(source, exp.Table) else []
+                for blocked in self.blocked_columns:
+                    if blocked == name or (
+                        "." in blocked
+                        and blocked.rsplit(".", 1)[1] == name
+                        and any(
+                            self._matches_table(table, blocked.rsplit(".", 1)[0])
+                            for table in candidates
+                        )
+                    ):
+                        return f"Access to column '{blocked}' is not allowed"
 
         return None
+
+    @staticmethod
+    def _matches_table(table: exp.Table, blocked: str) -> bool:
+        parts = blocked.split(".")
+        if table.name.lower() != parts[-1]:
+            return False
+        # Without an explicit schema, search_path can resolve to the protected table.
+        return len(parts) == 1 or not table.db or table.db.lower() == parts[-2]
 
     def _check_subquery_safety(self, statement: exp.Expression) -> str | None:
         """Check that all subqueries only contain SELECT statements.
@@ -303,7 +401,9 @@ class SQLValidator:
                         return f"{stmt_name} statements in subqueries are not allowed"
 
                 # Ensure it's a SELECT
-                if not isinstance(inner_stmt, (exp.Select, exp.With)):
+                if not isinstance(
+                    inner_stmt, (exp.Select, exp.With, exp.Union, exp.Intersect, exp.Except)
+                ):
                     return "Subqueries must contain only SELECT statements"
 
         return None

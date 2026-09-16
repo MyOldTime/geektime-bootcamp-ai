@@ -4,13 +4,13 @@ This module implements comprehensive metrics collection using prometheus_client,
 tracking query requests, LLM calls, database operations, and system health.
 """
 
-from prometheus_client import Counter, Gauge, Histogram, start_http_server
+from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
 
 
 class MetricsCollector:
     """Centralized metrics collector using Prometheus client.
 
-    This class provides singleton access to all application metrics,
+    This class provides isolated registries for application metrics,
     implementing the metrics specified in the implementation plan.
 
     Metrics Categories:
@@ -27,14 +27,11 @@ class MetricsCollector:
         ...     await execute_query()
     """
 
-    _instance: "MetricsCollector | None" = None
-
-    def __new__(cls) -> "MetricsCollector":
-        """Ensure singleton instance."""
-        if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialize_metrics()
-        return cls._instance
+    def __init__(self, registry: CollectorRegistry | None = None) -> None:
+        self.registry = registry if registry is not None else CollectorRegistry()
+        self._server = None
+        self._server_thread = None
+        self._initialize_metrics()
 
     def _initialize_metrics(self) -> None:
         """Initialize all Prometheus metrics.
@@ -47,12 +44,14 @@ class MetricsCollector:
             "pg_mcp_query_requests_total",
             "Total number of query requests processed",
             labelnames=["status", "database"],
+            registry=self.registry,
         )
 
         self.query_duration: Histogram = Histogram(
             "pg_mcp_query_duration_seconds",
             "Query request processing duration in seconds",
             buckets=(0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0),
+            registry=self.registry,
         )
 
         # LLM Metrics
@@ -60,6 +59,7 @@ class MetricsCollector:
             "pg_mcp_llm_calls_total",
             "Total number of LLM API calls",
             labelnames=["operation"],
+            registry=self.registry,
         )
 
         self.llm_latency: Histogram = Histogram(
@@ -67,12 +67,14 @@ class MetricsCollector:
             "LLM API call latency in seconds",
             labelnames=["operation"],
             buckets=(0.5, 1.0, 2.0, 5.0, 10.0, 20.0, 30.0),
+            registry=self.registry,
         )
 
         self.llm_tokens_used: Counter = Counter(
             "pg_mcp_llm_tokens_used",
             "Total number of tokens used by LLM",
             labelnames=["operation"],
+            registry=self.registry,
         )
 
         # Security Metrics
@@ -80,6 +82,7 @@ class MetricsCollector:
             "pg_mcp_sql_rejected_total",
             "Total number of SQL queries rejected by security checks",
             labelnames=["reason"],
+            registry=self.registry,
         )
 
         # Database Metrics
@@ -87,12 +90,14 @@ class MetricsCollector:
             "pg_mcp_db_connections_active",
             "Number of active database connections",
             labelnames=["database"],
+            registry=self.registry,
         )
 
         self.db_query_duration: Histogram = Histogram(
             "pg_mcp_db_query_duration_seconds",
             "Database query execution duration in seconds",
             buckets=(0.01, 0.05, 0.1, 0.5, 1.0, 2.0, 5.0, 10.0),
+            registry=self.registry,
         )
 
         # Cache Metrics
@@ -100,6 +105,7 @@ class MetricsCollector:
             "pg_mcp_schema_cache_age_seconds",
             "Age of the schema cache in seconds",
             labelnames=["database"],
+            registry=self.registry,
         )
 
     def start_metrics_server(self, port: int) -> None:
@@ -113,7 +119,14 @@ class MetricsCollector:
             >>> metrics.start_metrics_server(9090)
             # Metrics available at http://localhost:9090/metrics
         """
-        start_http_server(port)
+        self._server, self._server_thread = start_http_server(port, registry=self.registry)
+
+    def stop_metrics_server(self) -> None:
+        if self._server is not None:
+            self._server.shutdown()
+            self._server.server_close()
+            self._server_thread.join(timeout=5)
+            self._server = self._server_thread = None
 
     def increment_query_request(self, status: str, database: str) -> None:
         """Increment query request counter.
@@ -189,8 +202,9 @@ class MetricsCollector:
 
         This method is primarily useful for testing purposes.
         """
-        # Note: Prometheus client doesn't provide a clean way to reset metrics
-        # This is mainly for testing - in production, metrics are cumulative
+        if self._server is not None:
+            raise RuntimeError("Stop the metrics server before resetting its registry")
+        self.registry = CollectorRegistry()
         self._initialize_metrics()
 
 

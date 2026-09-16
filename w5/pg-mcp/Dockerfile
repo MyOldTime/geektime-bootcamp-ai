@@ -8,7 +8,7 @@
 # Stage 1: Builder
 # ============================================================================
 # Use official Python 3.14 image as base
-FROM python:3.14-slim as builder
+FROM python:3.14-slim AS builder
 
 # Set working directory
 WORKDIR /build
@@ -30,10 +30,12 @@ COPY pyproject.toml uv.lock ./
 # Install dependencies using UV
 # --no-dev: Skip development dependencies
 # --frozen: Use exact versions from lock file
-RUN uv pip install --system --no-dev --frozen
+RUN uv export --frozen --no-dev --no-emit-project -o requirements.txt \
+    && uv pip install --system -r requirements.txt
 
 # Copy source code
 COPY src/ ./src/
+COPY README.md ./
 COPY main.py ./
 
 # Install the package
@@ -89,8 +91,8 @@ EXPOSE 9090
 # Health check
 # Check if the process is running
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import psutil; exit(0 if any('python' in p.name() for p in psutil.process_iter()) else 1)" || exit 1
+    CMD python -c "from pathlib import Path; assert b'pg_mcp' in Path('/proc/1/cmdline').read_bytes()" || exit 1
 
 # Default command
 # Run the MCP server
-CMD ["python", "main.py"]
+CMD ["python", "-m", "pg_mcp"]

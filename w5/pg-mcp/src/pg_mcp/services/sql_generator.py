@@ -11,6 +11,7 @@ from openai import AsyncOpenAI
 
 from pg_mcp.config.settings import OpenAIConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
+from pg_mcp.observability.tracing import record_tokens_used
 from pg_mcp.prompts.sql_generation import SQL_GENERATION_SYSTEM_PROMPT, build_user_prompt
 
 if TYPE_CHECKING:
@@ -42,7 +43,12 @@ class SQLGenerator:
             config: OpenAI configuration including API key and model settings.
         """
         self.config = config
-        self.client = AsyncOpenAI(api_key=config.api_key.get_secret_value(), timeout=config.timeout)
+        self.client = AsyncOpenAI(
+            api_key=config.api_key.get_secret_value(),
+            base_url=config.base_url,
+            timeout=config.timeout,
+            max_retries=0,
+        )
 
     async def generate(
         self,
@@ -105,6 +111,8 @@ class SQLGenerator:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
+            if response.usage:
+                record_tokens_used(response.usage.total_tokens)
         except TimeoutError as e:
             raise LLMTimeoutError(
                 message=f"OpenAI API request timed out after {self.config.timeout}s",
@@ -188,8 +196,17 @@ class SQLGenerator:
             # Remove trailing semicolon for consistency
             return sql.rstrip(";") + ";"
 
-        # Strategy 2: Find SELECT/WITH statements in plain text
-        sql_pattern = r"((?:WITH|SELECT)\s+.*?)(?:;|$)"
+        # Preserve complete SQL for security validation, including EXPLAIN,
+        # write statements, multiple statements, and semicolons in literals.
+        if re.match(
+            r"^(?:SELECT|WITH|EXPLAIN|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|COPY)\b",
+            content,
+            re.IGNORECASE,
+        ):
+            return content.rstrip(";") + ";"
+
+        # Strategy 2: Find a SQL statement following explanatory prose.
+        sql_pattern = r"\b((?:EXPLAIN|WITH|SELECT)\s+.*)"
         matches = re.findall(sql_pattern, content, re.DOTALL | re.IGNORECASE)
 
         if matches:

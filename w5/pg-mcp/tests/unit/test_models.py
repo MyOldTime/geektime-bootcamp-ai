@@ -295,7 +295,7 @@ class TestQueryRequest:
     def test_question_too_long(self) -> None:
         """Test question length limit."""
         with pytest.raises(ValidationError):
-            QueryRequest(question="x" * 10001)
+            QueryRequest(question="x" * 50001)
 
 
 class TestQueryResult:

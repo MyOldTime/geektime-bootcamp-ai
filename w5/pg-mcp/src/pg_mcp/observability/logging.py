@@ -11,6 +11,8 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel
 
+from pg_mcp.observability.tracing import get_request_id
+
 
 class LogRecord(BaseModel):
     """Structured log record model.
@@ -30,6 +32,15 @@ class LogRecord(BaseModel):
     message: str
     request_id: str | None = None
     extra: dict[str, Any] | None = None
+
+
+class RequestContextFilter(logging.Filter):
+    """Attach the current request ID to downstream service logs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if not getattr(record, "request_id", None):
+            record.request_id = get_request_id()
+        return True
 
 
 class SensitiveDataFilter(logging.Filter):
@@ -258,7 +269,8 @@ def configure_logging(
         root_logger.removeHandler(handler)
 
     # Create console handler
-    handler = logging.StreamHandler(sys.stdout)
+    handler = logging.StreamHandler(sys.stderr)
+    handler.addFilter(RequestContextFilter())
 
     # Set formatter
     formatter: logging.Formatter

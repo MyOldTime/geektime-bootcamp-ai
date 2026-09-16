@@ -5,13 +5,20 @@ and type safety. Configuration is loaded from environment variables with
 sensible defaults.
 """
 
-from typing import Literal
+import json
+from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
-class DatabaseConfig(BaseSettings):
+class EnvironmentSettings(BaseSettings):
+    """Read each configuration section from the environment and optional .env."""
+
+    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+
+
+class DatabaseConfig(EnvironmentSettings):
     """PostgreSQL database connection configuration."""
 
     model_config = SettingsConfigDict(env_prefix="DATABASE_")
@@ -43,14 +50,17 @@ class DatabaseConfig(BaseSettings):
         return f"postgresql://{self.user}:***@{self.host}:{self.port}/{self.name}"
 
 
-class OpenAIConfig(BaseSettings):
+class OpenAIConfig(EnvironmentSettings):
     """OpenAI API configuration."""
 
     model_config = SettingsConfigDict(env_prefix="OPENAI_")
 
     api_key: SecretStr = Field(default=SecretStr(""), description="OpenAI API key")
+    base_url: str = Field(
+        default="https://api.openai.com/v1", description="Base URL for the OpenAI API"
+    )
     model: str = Field(default="gpt-4o-mini", description="Model to use for SQL generation")
-    max_tokens: int = Field(default=2000, ge=100, le=4096, description="Maximum tokens in response")
+    max_tokens: int = Field(default=2000, ge=100, description="Maximum tokens in response")
     temperature: float = Field(
         default=0.0, ge=0.0, le=2.0, description="Temperature for response randomness"
     )
@@ -61,24 +71,25 @@ class OpenAIConfig(BaseSettings):
     @field_validator("api_key")
     @classmethod
     def validate_api_key(cls, v: SecretStr) -> SecretStr:
-        """Validate API key is not empty and has correct format."""
+        """Require a key without imposing a provider-specific prefix."""
         api_key_str = v.get_secret_value()
         if not api_key_str or not api_key_str.strip():
             raise ValueError("OpenAI API key must not be empty")
-        if not api_key_str.startswith("sk-"):
-            raise ValueError("OpenAI API key must start with 'sk-'")
         return v
 
 
-class SecurityConfig(BaseSettings):
+class SecurityConfig(EnvironmentSettings):
     """Security and access control configuration."""
 
     model_config = SettingsConfigDict(env_prefix="SECURITY_")
 
     allow_write_operations: bool = Field(
-        default=False, description="Allow write operations (INSERT, UPDATE, DELETE)"
+        default=False, description="Compatibility setting; this read-only service requires false"
     )
-    blocked_functions: list[str] = Field(
+    blocked_tables: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    blocked_columns: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    allow_explain: bool = False
+    blocked_functions: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "pg_sleep",
             "pg_read_file",
@@ -99,25 +110,33 @@ class SecurityConfig(BaseSettings):
         default="public", description="Safe search_path to set during query execution"
     )
 
-    @field_validator("blocked_functions", mode="before")
+    @field_validator("allow_write_operations")
+    @classmethod
+    def reject_writes(cls, value: bool) -> bool:
+        if value:
+            raise ValueError(
+                "This server supports read-only queries; write operations cannot be enabled"
+            )
+        return value
+
+    @field_validator("blocked_functions", "blocked_tables", "blocked_columns", mode="before")
     @classmethod
     def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
         """Parse comma-separated string or list."""
         if isinstance(v, str):
+            if v.strip().startswith("["):
+                return json.loads(v)
             return [f.strip() for f in v.split(",") if f.strip()]
         return v
 
 
-class ValidationConfig(BaseSettings):
+class ValidationConfig(EnvironmentSettings):
     """Query validation configuration."""
 
     model_config = SettingsConfigDict(env_prefix="VALIDATION_")
 
     max_question_length: int = Field(
         default=10000, ge=1, le=50000, description="Maximum question length in characters"
-    )
-    min_confidence_score: int = Field(
-        default=70, ge=0, le=100, description="Minimum confidence score (0-100)"
     )
 
     # Result validation settings
@@ -129,11 +148,25 @@ class ValidationConfig(BaseSettings):
         default=10.0, ge=1.0, le=60.0, description="Result validation timeout in seconds"
     )
     confidence_threshold: int = Field(
-        default=70, ge=0, le=100, description="Minimum confidence for acceptable results"
+        default=70,
+        ge=0,
+        le=100,
+        description="Minimum confidence for acceptable results",
+        validation_alias=AliasChoices(
+            "VALIDATION_CONFIDENCE_THRESHOLD",
+            "VALIDATION_MIN_CONFIDENCE_SCORE",
+            "confidence_threshold",
+            "min_confidence_score",
+        ),
     )
 
+    @property
+    def min_confidence_score(self) -> int:
+        """Compatibility alias for the result confidence threshold."""
+        return self.confidence_threshold
 
-class CacheConfig(BaseSettings):
+
+class CacheConfig(EnvironmentSettings):
     """Schema cache configuration."""
 
     model_config = SettingsConfigDict(env_prefix="CACHE_")
@@ -143,12 +176,22 @@ class CacheConfig(BaseSettings):
     )
     max_size: int = Field(default=100, ge=1, le=1000, description="Maximum cache entries")
     enabled: bool = Field(default=True, description="Enable schema caching")
+    auto_refresh: bool = False
+    refresh_interval_minutes: int = Field(default=60, ge=1)
+    startup_timeout_seconds: float = Field(default=30.0, gt=0)
 
 
-class ResilienceConfig(BaseSettings):
+class ResilienceConfig(EnvironmentSettings):
     """Resilience and fault tolerance configuration."""
 
     model_config = SettingsConfigDict(env_prefix="RESILIENCE_")
+
+    max_concurrent_queries: int = Field(default=10, ge=1)
+    max_concurrent_llm_calls: int = Field(default=5, ge=1)
+    request_queue_size: int = Field(default=100, ge=0)
+    queue_timeout: float = Field(default=30.0, gt=0)
+    db_retry_attempts: int = Field(default=3, ge=0, le=10)
+    db_retry_delay: float = Field(default=1.0, ge=0.1, le=10)
 
     max_retries: int = Field(default=3, ge=0, le=10, description="Maximum retry attempts")
     retry_delay: float = Field(
@@ -165,7 +208,7 @@ class ResilienceConfig(BaseSettings):
     )
 
 
-class ObservabilityConfig(BaseSettings):
+class ObservabilityConfig(EnvironmentSettings):
     """Observability and monitoring configuration."""
 
     model_config = SettingsConfigDict(env_prefix="OBSERVABILITY_")
@@ -177,7 +220,7 @@ class ObservabilityConfig(BaseSettings):
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] = Field(
         default="INFO", description="Logging level"
     )
-    log_format: Literal["json", "text"] = Field(default="text", description="Log format")
+    log_format: Literal["json", "text"] = Field(default="json", description="Log format")
 
 
 class Settings(BaseSettings):
@@ -196,12 +239,26 @@ class Settings(BaseSettings):
 
     # Nested configurations
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
+    databases: list[DatabaseConfig] = Field(default_factory=list)
     openai: OpenAIConfig = Field(default_factory=OpenAIConfig)
     security: SecurityConfig = Field(default_factory=SecurityConfig)
     validation: ValidationConfig = Field(default_factory=ValidationConfig)
     cache: CacheConfig = Field(default_factory=CacheConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+
+    @field_validator("databases")
+    @classmethod
+    def validate_databases(cls, value: list[DatabaseConfig]) -> list[DatabaseConfig]:
+        names = [database.name for database in value]
+        if len(names) != len(set(names)):
+            raise ValueError("Database names must be unique")
+        return value
+
+    @property
+    def configured_databases(self) -> list[DatabaseConfig]:
+        """Use the explicit list, falling back to the legacy single database."""
+        return self.databases or [self.database]
 
     @property
     def is_production(self) -> bool:

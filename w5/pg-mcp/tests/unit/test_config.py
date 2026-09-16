@@ -100,6 +100,7 @@ class TestOpenAIConfig:
     def test_default_values(self) -> None:
         """Test default configuration values."""
         config = OpenAIConfig(api_key="sk-test123")
+        assert config.base_url == "https://api.openai.com/v1"
         assert config.model == "gpt-4o-mini"
         assert config.max_tokens == 2000
         assert config.temperature == 0.0
@@ -109,12 +110,14 @@ class TestOpenAIConfig:
         """Test custom configuration values."""
         config = OpenAIConfig(
             api_key="sk-custom",
+            base_url="https://gateway.example.com/v1",
             model="gpt-4",
             max_tokens=4000,
             temperature=0.7,
             timeout=60.0,
         )
         assert config.model == "gpt-4"
+        assert config.base_url == "https://gateway.example.com/v1"
         assert config.max_tokens == 4000
         assert config.temperature == 0.7
         assert config.timeout == 60.0
@@ -129,18 +132,17 @@ class TestOpenAIConfig:
         with pytest.raises(ValidationError, match="must not be empty"):
             OpenAIConfig(api_key="   ")
 
-    def test_invalid_api_key_format(self) -> None:
-        """Test API key must start with sk-."""
-        with pytest.raises(ValidationError, match="must start with 'sk-'"):
-            OpenAIConfig(api_key="invalid-key")
+    def test_compatible_provider_api_key(self) -> None:
+        """Compatible endpoints may use keys without the OpenAI prefix."""
+        config = OpenAIConfig(api_key="provider-test-key", base_url="https://gateway.example/v1")
+        assert config.api_key.get_secret_value() == "provider-test-key"
 
     def test_invalid_max_tokens(self) -> None:
         """Test invalid max_tokens is rejected."""
         with pytest.raises(ValidationError):
             OpenAIConfig(api_key="sk-test", max_tokens=50)
 
-        with pytest.raises(ValidationError):
-            OpenAIConfig(api_key="sk-test", max_tokens=5000)
+        assert OpenAIConfig(api_key="sk-test", max_tokens=32000).max_tokens == 32000
 
     def test_invalid_temperature(self) -> None:
         """Test invalid temperature is rejected."""
@@ -180,9 +182,9 @@ class TestSecurityConfig:
         assert "func3" in config.blocked_functions
 
     def test_allow_write_operations(self) -> None:
-        """Test enabling write operations."""
-        config = SecurityConfig(allow_write_operations=True)
-        assert config.allow_write_operations is True
+        """Reject unsupported writes rather than silently ignoring the setting."""
+        with pytest.raises(ValidationError):
+            SecurityConfig(allow_write_operations=True)
 
     def test_invalid_max_rows(self) -> None:
         """Test invalid max_rows is rejected."""
@@ -360,12 +362,12 @@ class TestSettings:
                 port=5433,
             ),
             security=SecurityConfig(
-                allow_write_operations=True,
+                blocked_tables=["secrets"],
             ),
         )
         assert settings.database.host == "custom.host"
         assert settings.database.port == 5433
-        assert settings.security.allow_write_operations is True
+        assert settings.security.blocked_tables == ["secrets"]
 
 
 class TestSettingsGlobalInstance:
@@ -409,6 +411,7 @@ class TestSettingsGlobalInstance:
         """Test loading settings from environment variables."""
         os.environ["OPENAI_API_KEY"] = "sk-env-key"
         os.environ["OPENAI_MODEL"] = "gpt-4"
+        os.environ["OPENAI_BASE_URL"] = "https://gateway.example.com/v1"
         os.environ["DATABASE_HOST"] = "env.host.com"
         os.environ["SECURITY_MAX_ROWS"] = "5000"
 
@@ -418,5 +421,6 @@ class TestSettingsGlobalInstance:
         # Use get_secret_value() to access SecretStr content
         assert settings.openai.api_key.get_secret_value() == "sk-env-key"
         assert settings.openai.model == "gpt-4"
+        assert settings.openai.base_url == "https://gateway.example.com/v1"
         assert settings.database.host == "env.host.com"
         assert settings.security.max_rows == 5000

@@ -355,7 +355,8 @@ class TestSensitiveResources:
         is_valid, error = validator.validate(sql)
         # Actually, it depends on implementation - let's test both scenarios
         # The validator checks both column name and qualified name
-        assert is_valid or "ssn" in (error or "")
+        assert not is_valid
+        assert "ssn" in error
 
 
 class TestMultiStatement:
@@ -486,20 +487,11 @@ class TestExplainStatements:
         assert is_valid
         assert error is None
 
-    def test_explain_with_dangerous_query_allowed(self) -> None:
-        """Test EXPLAIN with dangerous underlying query is allowed.
-
-        EXPLAIN only shows query plans and doesn't execute the query,
-        so even "EXPLAIN DELETE" is safe as it won't modify data.
-        """
-        config = SecurityConfig()
-        validator = SQLValidator(config=config, allow_explain=True)
-
-        # EXPLAIN DELETE is safe - it only shows the execution plan
-        sql = "EXPLAIN DELETE FROM users"
-        is_valid, error = validator.validate(sql)
-        assert is_valid
-        assert error is None
+    @pytest.mark.parametrize("prefix", ["EXPLAIN", "EXPLAIN ANALYZE", "EXPLAIN (ANALYZE TRUE)"])
+    def test_explain_writes_rejected(self, prefix: str) -> None:
+        validator = SQLValidator(config=SecurityConfig(allow_explain=True))
+        with pytest.raises(SecurityViolationError):
+            validator.validate_or_raise(f"{prefix} DELETE FROM users")
 
 
 class TestValidatorHelperMethods:

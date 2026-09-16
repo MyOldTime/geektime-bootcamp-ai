@@ -15,6 +15,7 @@ from asyncpg import Connection, Pool
 
 from pg_mcp.config.settings import DatabaseConfig, SecurityConfig
 from pg_mcp.models.errors import DatabaseError, ExecutionTimeoutError
+from pg_mcp.observability.metrics import MetricsCollector
 
 
 class SQLExecutor:
@@ -37,6 +38,7 @@ class SQLExecutor:
         pool: Pool,
         security_config: SecurityConfig,
         db_config: DatabaseConfig,
+        metrics: MetricsCollector | None = None,
     ) -> None:
         """Initialize SQL executor.
 
@@ -48,6 +50,7 @@ class SQLExecutor:
         self.pool = pool
         self.security_config = security_config
         self.db_config = db_config
+        self.metrics = metrics
 
     async def execute(
         self,
@@ -93,9 +96,10 @@ class SQLExecutor:
 
         try:
             async with (
-                self.pool.acquire() as connection,
+                self.pool.acquire(timeout=self.db_config.pool_timeout) as connection,
                 connection.transaction(readonly=True),
             ):
+                self._update_pool_metrics()
                 # Set session parameters for security
                 await self._set_session_params(connection, timeout)
 
@@ -138,6 +142,12 @@ class SQLExecutor:
                 message=f"Database query failed: {e!s}",
                 details={
                     "error_code": e.sqlstate if hasattr(e, "sqlstate") else None,
+                    "retryable": bool(
+                        e.sqlstate
+                        and (
+                            e.sqlstate.startswith("08") or e.sqlstate in {"40001", "40P01", "57P01"}
+                        )
+                    ),
                     "error_message": str(e),
                     "sql": sql[:200],  # Include truncated SQL for debugging
                 },
@@ -151,6 +161,15 @@ class SQLExecutor:
                     "error_message": str(e),
                 },
             ) from e
+        finally:
+            self._update_pool_metrics()
+
+    def _update_pool_metrics(self) -> None:
+        if self.metrics is not None:
+            self.metrics.set_db_connections_active(
+                self.db_config.name,
+                self.pool.get_size() - self.pool.get_idle_size(),
+            )
 
     async def _set_session_params(
         self,
@@ -178,7 +197,7 @@ class SQLExecutor:
         try:
             # Set statement timeout (PostgreSQL expects milliseconds)
             timeout_ms = int(timeout * 1000)
-            await conn.execute(f"SET statement_timeout = {timeout_ms}")
+            await conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
 
             # Set safe search_path to prevent schema injection
             # Using execute with literal to avoid SQL injection
@@ -189,7 +208,7 @@ class SQLExecutor:
                     message="Invalid search_path configuration",
                     details={"search_path": search_path},
                 )
-            await conn.execute(f"SET search_path = '{search_path}'")
+            await conn.execute(f"SET LOCAL search_path = {search_path}")
 
             # Switch to read-only role if configured
             if self.security_config.readonly_role:
@@ -200,7 +219,7 @@ class SQLExecutor:
                         message="Invalid readonly_role configuration",
                         details={"readonly_role": readonly_role},
                     )
-                await conn.execute(f"SET ROLE {readonly_role}")
+                await conn.execute(f'SET LOCAL ROLE "{readonly_role}"')
 
         except asyncpg.PostgresError as e:
             raise DatabaseError(

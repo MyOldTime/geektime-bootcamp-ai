@@ -131,7 +131,7 @@ LIMIT 100;
         assert "LIMIT 100;" in result
 
     def test_extract_sql_returns_none_for_invalid(self, generator: SQLGenerator) -> None:
-        """Test that extraction returns None for non-SQL content."""
+        """Extraction preserves writes so the security validator can reject them."""
         invalid_contents = [
             "",
             "This is just plain text without any SQL",
@@ -142,8 +142,9 @@ LIMIT 100;
 
         for content in invalid_contents:
             result = generator._extract_sql(content)
-            # Should return None for UPDATE/DELETE (not SELECT/WITH)
             if content.startswith(("UPDATE", "DELETE")):
+                assert result == content + ";"
+            elif not content.startswith("```"):
                 assert result is None
 
     def test_extract_sql_removes_multiple_semicolons(self, generator: SQLGenerator) -> None:

@@ -80,6 +80,8 @@ DATABASE_PASSWORD=your_password
 # OpenAI 配置
 OPENAI_API_KEY=sk-your-api-key-here
 OPENAI_MODEL=gpt-5.2-mini
+# 可选：使用兼容服务或代理时，替换为其 API 基础地址
+OPENAI_BASE_URL=https://api.openai.com/v1
 
 # 安全设置（可选，显示默认值）
 SECURITY_ALLOW_WRITE_OPERATIONS=false
@@ -94,11 +96,11 @@ SECURITY_MAX_EXECUTION_TIME=30
 #### 独立模式
 
 ```bash
-# 使用 UV
-uv run python main.py
+# 使用 UV，并将 .env 加载为环境变量
+uv run --env-file .env python -m pg_mcp
 
-# 或使用 pip
-python main.py
+# 或使用 pip（需事先导出环境变量）
+python -m pg_mcp
 ```
 
 #### 与 Claude Desktop 集成
@@ -119,7 +121,7 @@ python main.py
         "/absolute/path/to/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -299,21 +301,41 @@ Return Type: sql
 | `DATABASE_MAX_POOL_SIZE`   | 池中最大连接数  | `20`        |
 | `DATABASE_COMMAND_TIMEOUT` | 查询超时（秒）    | `30`        |
 
+### 多数据库与访问控制
+
+多数据库可通过 `.env` 中的 `DATABASES` JSON 数组配置；非空列表会替代单库 `DATABASE_*` 配置，数据库名称必须唯一。例如：
+
+```dotenv
+DATABASES=[{"name":"app","host":"localhost","user":"reader","password":"secret"},{"name":"analytics","host":"db.example","user":"reader","password":"secret"}]
+SECURITY_BLOCKED_TABLES=["public.secrets"]
+SECURITY_BLOCKED_COLUMNS=["users.ssn","password"]
+SECURITY_ALLOW_EXPLAIN=false
+```
+
+多库模式必须在请求中指定 `database`；未知数据库或缺失执行器会返回错误，不会退回其他数据库。表/列限制支持 JSON 数组或逗号分隔值，检查覆盖别名、CTE、子查询及 EXPLAIN 内部 SQL。存在列限制时，涉及受限表的通配符和整行引用会被拒绝，请显式列出允许的列。`EXPLAIN ANALYZE` 也必须通过只读检查。
+
+`SECURITY_READONLY_ROLE` 可指定仅拥有允许对象 SELECT 权限的 PostgreSQL 角色。应用的 SQL 检查与数据库权限同时生效；视图和自定义函数的内部访问权限需通过数据库授权控制。`SECURITY_ALLOW_WRITE_OPERATIONS=true` 会导致配置校验失败。
+
 ### OpenAI 设置
 
 | 变量                 | 描述                    | 默认值         |
 |----------------------|-------------------------|----------------|
 | `OPENAI_API_KEY`     | OpenAI API 密钥         | 必需           |
+| `OPENAI_BASE_URL`    | API 基础地址（可选）     | `https://api.openai.com/v1` |
 | `OPENAI_MODEL`       | 使用的模型              | `gpt-5.2-mini` |
-| `OPENAI_MAX_TOKENS`  | 每次请求的最大 token 数 | `32000`        |
+| `OPENAI_MAX_TOKENS`  | 每次请求的最大 token 数 | `2000`        |
 | `OPENAI_TEMPERATURE` | 模型温度                | `0.0`          |
 | `OPENAI_TIMEOUT`     | API 超时（秒）            | `30`           |
+
+`OPENAI_BASE_URL` 同时用于 SQL 生成和结果校验。不设置时使用官方地址；使用兼容服务或代理时，请填写服务提供的 API 基础地址（例如 `http://localhost:8000/v1`），不要包含 `/chat/completions`。
+
+兼容服务的 API key 无需以 `sk-` 开头，但不能为空。`OPENAI_MAX_TOKENS` 的模型上限由服务端校验，应用不再固定限制为 4096。
 
 ### 安全设置
 
 | 变量                              | 描述                      | 默认值            |
 |-----------------------------------|---------------------------|-------------------|
-| `SECURITY_ALLOW_WRITE_OPERATIONS` | 允许 INSERT/UPDATE/DELETE | `false`           |
+| `SECURITY_ALLOW_WRITE_OPERATIONS` | 只读服务，必须为 false | `false`           |
 | `SECURITY_BLOCKED_FUNCTIONS`      | 逗号分隔的函数黑名单      | 参考 .env.example |
 | `SECURITY_MAX_ROWS`               | 每个查询的最大行数        | `10000`           |
 | `SECURITY_MAX_EXECUTION_TIME`     | 查询超时（秒）              | `30`              |
@@ -335,6 +357,26 @@ Return Type: sql
 | `RESILIENCE_BACKOFF_FACTOR`            | 指数退避倍数     | `2.0`  |
 | `RESILIENCE_CIRCUIT_BREAKER_THRESHOLD` | 熔断前的失败数   | `5`    |
 | `RESILIENCE_CIRCUIT_BREAKER_TIMEOUT`   | 熔断器超时（秒）   | `60`   |
+
+请求与 LLM 调用分别受 `RESILIENCE_MAX_CONCURRENT_QUERIES`（默认 10）和 `RESILIENCE_MAX_CONCURRENT_LLM_CALLS`（默认 5）限制。`RESILIENCE_REQUEST_QUEUE_SIZE` 默认 100，`RESILIENCE_QUEUE_TIMEOUT` 默认 30 秒；队列满或等待超时返回 `rate_limit_exceeded`。
+
+LLM 暂时性网络错误、超时、429 和服务端错误会按配置退避重试，认证错误不会重试。数据库暂时性连接错误、序列化冲突和死锁使用独立的 `RESILIENCE_DB_RETRY_ATTEMPTS`（默认 3）与 `RESILIENCE_DB_RETRY_DELAY`（默认 1 秒）。重试延迟最多 60 秒；安全检查拒绝不会计为 LLM 服务故障。
+
+`VALIDATION_MAX_QUESTION_LENGTH` 控制请求长度；`VALIDATION_CONFIDENCE_THRESHOLD` 控制结果警告阈值，旧名称 `VALIDATION_MIN_CONFIDENCE_SCORE` 保持兼容。结果校验失败时返回低置信度和 `warning`。响应总是包含整数 `tokens_used` 和 `request_id`，token 数包含生成、校验及重试的实际消耗。
+
+Prometheus 指标记录请求状态/延迟、LLM 调用/延迟/token、SQL 拒绝、数据库耗时/连接与缓存年龄。请求 ID 通过异步上下文传播到日志，日志写入 stderr，避免污染 MCP stdio。服务关闭时会停止指标 HTTP 服务并关闭 OpenAI 客户端和数据库连接池。
+
+缓存容量由 `CACHE_MAX_SIZE` 限制。设置 `CACHE_AUTO_REFRESH=true` 可启用后台刷新，`CACHE_REFRESH_INTERVAL_MINUTES` 默认 60，`CACHE_STARTUP_TIMEOUT_SECONDS` 默认 30。
+
+验证新增运行链路：
+
+```bash
+uv run --extra dev pytest tests/unit
+```
+
+`tests/integration/test_runtime_postgres.py` 使用真实 PostgreSQL 和模拟 LLM，验证多库路由、只读角色、会话恢复和 EXPLAIN。测试需要独立 PostgreSQL 实例：用户 `postgres`、密码 `pg-mcp-test-only`，并设置 `PG_MCP_TEST_PORT` 为其本地端口。测试会创建并清理名称随机的测试数据库与角色。
+
+依赖真实 OpenAI 服务的旧集成测试默认跳过；如需运行，请明确设置 `PG_MCP_RUN_LIVE_TESTS=1` 并提供测试数据库和 API 配置。
 
 ### 可观测性设置
 
@@ -415,7 +457,7 @@ pg-mcp/
 ├── fixtures/               # 测试数据库 fixture
 ├── .env.example            # 环境模板
 ├── pyproject.toml          # 项目配置
-└── main.py                 # 入口点
+└── src/pg_mcp/__main__.py   # 入口点
 ```
 
 ## Docker 部署
@@ -547,7 +589,7 @@ Error: Schema not found in cache
 
 ```bash
 export OBSERVABILITY_LOG_LEVEL=DEBUG
-uv run python main.py
+uv run python -m pg_mcp
 ```
 
 ## Claude Desktop 配置
@@ -566,7 +608,7 @@ uv run python main.py
         "/Users/yourname/projects/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -576,6 +618,7 @@ uv run python main.py
         "DATABASE_PASSWORD": "your-password",
         "OPENAI_API_KEY": "sk-your-api-key-here",
         "OPENAI_MODEL": "gpt-5.2-mini",
+        "OPENAI_BASE_URL": "https://api.openai.com/v1",
         "SECURITY_MAX_ROWS": "10000",
         "CACHE_ENABLED": "true",
         "OBSERVABILITY_LOG_LEVEL": "INFO"
@@ -599,7 +642,7 @@ uv run python main.py
         "C:\\Users\\YourName\\projects\\pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -622,7 +665,7 @@ uv run python main.py
   "mcpServers": {
     "postgres": {
       "command": "/absolute/path/to/pg-mcp/.venv/bin/python",
-      "args": ["main.py"],
+      "args": ["-m", "pg_mcp"],
       "cwd": "/absolute/path/to/pg-mcp",
       "env": {
         "DATABASE_HOST": "localhost",

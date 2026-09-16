@@ -18,6 +18,17 @@ from pydantic import BaseModel
 _request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
 )
+_tokens_used_var: contextvars.ContextVar[int] = contextvars.ContextVar("tokens_used", default=0)
+
+
+def record_tokens_used(tokens: int) -> None:
+    """Accumulate actual usage within the current request, including retries."""
+    if isinstance(tokens, int) and tokens >= 0:
+        _tokens_used_var.set(_tokens_used_var.get() + tokens)
+
+
+def get_tokens_used() -> int:
+    return _tokens_used_var.get()
 
 # Type variables for decorators
 P = ParamSpec("P")
@@ -113,9 +124,11 @@ async def request_context(request_id: str | None = None) -> AsyncIterator[str]:
         request_id = generate_request_id()
 
     token = _request_id_var.set(request_id)
+    usage_token = _tokens_used_var.set(0)
     try:
         yield request_id
     finally:
+        _tokens_used_var.reset(usage_token)
         _request_id_var.reset(token)
 
 

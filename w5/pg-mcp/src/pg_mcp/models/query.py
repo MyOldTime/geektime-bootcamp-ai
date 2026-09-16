@@ -7,7 +7,7 @@ responses containing query results or errors.
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class ReturnType(StrEnum):
@@ -23,7 +23,7 @@ class QueryRequest(BaseModel):
     question: str = Field(
         ...,
         min_length=1,
-        max_length=10000,
+        max_length=50000,
         description="Natural language question about the data",
     )
     database: str | None = Field(
@@ -107,7 +107,9 @@ class QueryResult(BaseModel):
 
     columns: list[str] = Field(default_factory=list, description="Column names in result set")
     rows: list[dict[str, Any]] = Field(default_factory=list, description="Result rows as dicts")
-    row_count: int = Field(default=0, ge=0, description="Number of rows returned")
+    row_count: int = Field(
+        default=0, ge=0, validate_default=True, description="Number of rows returned"
+    )
     execution_time_ms: float = Field(default=0.0, ge=0.0, description="Query execution time in ms")
 
     @field_validator("row_count", mode="before")
@@ -157,6 +159,9 @@ class QueryResponse(BaseModel):
     )
     tokens_used: int | None = Field(None, ge=0, description="LLM tokens used for generation")
 
+    request_id: str | None = None
+    warning: str | None = None
+
     def to_dict(self) -> dict[str, Any]:
         """Convert response to dictionary for MCP tool return.
 
@@ -164,7 +169,7 @@ class QueryResponse(BaseModel):
             dict: Dictionary representation compatible with MCP protocol.
         """
         # Use model_dump but ensure tokens_used is always present
-        result = self.model_dump(exclude_none=False)
+        result = self.model_dump(mode="json", exclude_none=False)
 
         # Ensure tokens_used is always present (use 0 if None)
         if result.get("tokens_used") is None:
@@ -172,49 +177,14 @@ class QueryResponse(BaseModel):
 
         return result
 
-    @field_validator("data")
-    @classmethod
-    def validate_data(cls, v: QueryResult | None, info: Any) -> QueryResult | None:
-        """Ensure data is present only when success is True and executed.
-
-        Args:
-            v: The data field value.
-            info: Validation info containing other fields.
-
-        Returns:
-            QueryResult | None: Validated data field.
-        """
-        if hasattr(info, "data"):
-            success = info.data.get("success", False)
-            error = info.data.get("error")
-            if not success and v is not None:
-                raise ValueError("Data should not be present when success is False")
-            if success and error is not None and v is not None:
-                raise ValueError("Cannot have both data and error")
-        return v
-
-    @field_validator("error")
-    @classmethod
-    def validate_error(cls, v: ErrorDetail | None, info: Any) -> ErrorDetail | None:
-        """Ensure error is present when success is False.
-
-        Args:
-            v: The error field value.
-            info: Validation info containing other fields.
-
-        Returns:
-            ErrorDetail | None: Validated error field.
-        """
-        if hasattr(info, "data"):
-            success = info.data.get("success", False)
-            if not success and v is None:
+    @model_validator(mode="after")
+    def validate_response(self) -> "QueryResponse":
+        """Validate the completed response, independent of field ordering."""
+        if self.success and self.error is not None:
+            raise ValueError("Successful response cannot contain an error")
+        if not self.success:
+            if self.error is None:
                 raise ValueError("Error must be present when success is False")
-        return v
-
-    def to_dict(self) -> dict[str, Any]:
-        """Convert response to dictionary.
-
-        Returns:
-            dict: Dictionary representation of query response.
-        """
-        return self.model_dump(exclude_none=True)
+            if self.data is not None:
+                raise ValueError("Data should not be present when success is False")
+        return self

@@ -105,6 +105,10 @@ class SchemaCache:
         schema = await introspector.introspect()
 
         if self.config.enabled:
+            if database_name not in self._cache and len(self._cache) >= self.config.max_size:
+                oldest = min(self._cache_timestamps, key=self._cache_timestamps.__getitem__)
+                self._cache.pop(oldest, None)
+                self._cache_timestamps.pop(oldest, None)
             self._cache[database_name] = schema
             self._cache_timestamps[database_name] = datetime.now(UTC)
 

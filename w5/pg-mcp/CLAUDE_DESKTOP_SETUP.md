@@ -39,7 +39,7 @@ Open the configuration file in your text editor and add the PostgreSQL MCP serve
         "/absolute/path/to/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -60,7 +60,7 @@ Open the configuration file in your text editor and add the PostgreSQL MCP serve
   "mcpServers": {
     "postgres": {
       "command": "/absolute/path/to/pg-mcp/.venv/bin/python",
-      "args": ["main.py"],
+      "args": ["-m", "pg_mcp"],
       "cwd": "/absolute/path/to/pg-mcp",
       "env": {
         "DATABASE_HOST": "localhost",
@@ -81,7 +81,7 @@ Open the configuration file in your text editor and add the PostgreSQL MCP serve
   "mcpServers": {
     "postgres": {
       "command": "python3",
-      "args": ["main.py"],
+      "args": ["-m", "pg_mcp"],
       "cwd": "/absolute/path/to/pg-mcp",
       "env": {
         "DATABASE_HOST": "localhost",
@@ -111,12 +111,14 @@ These parameters are required for the server to function:
 
 You can add any of these optional parameters to customize behavior:
 
+Set `OPENAI_BASE_URL` to use a compatible API endpoint for both SQL generation and result validation. It defaults to `https://api.openai.com/v1`; use the API root, without `/chat/completions`.
+
 ```json
 {
   "mcpServers": {
     "postgres": {
       "command": "uv",
-      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "main.py"],
+      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "-m", "pg_mcp"],
       "env": {
         "DATABASE_HOST": "localhost",
         "DATABASE_PORT": "5432",
@@ -130,7 +132,8 @@ You can add any of these optional parameters to customize behavior:
 
         "OPENAI_API_KEY": "sk-...",
         "OPENAI_MODEL": "gpt-5.2-mini",
-        "OPENAI_MAX_TOKENS": "32000",
+        "OPENAI_BASE_URL": "https://api.openai.com/v1",
+        "OPENAI_MAX_TOKENS": "2000",
         "OPENAI_TEMPERATURE": "0.0",
 
         "SECURITY_ALLOW_WRITE_OPERATIONS": "false",
@@ -183,7 +186,7 @@ If configured correctly, Claude will use the PostgreSQL MCP server to answer the
         "/Users/yourname/projects/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -211,7 +214,7 @@ If configured correctly, Claude will use the PostgreSQL MCP server to answer the
         "C:\\Users\\YourName\\projects\\pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -239,7 +242,7 @@ If configured correctly, Claude will use the PostgreSQL MCP server to answer the
         "/home/yourname/projects/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -269,7 +272,7 @@ You can configure multiple database connections by adding additional MCP server 
         "/path/to/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "prod-db.example.com",
@@ -287,7 +290,7 @@ You can configure multiple database connections by adding additional MCP server 
         "/path/to/pg-mcp",
         "run",
         "python",
-        "main.py"
+        "-m", "pg_mcp"
       ],
       "env": {
         "DATABASE_HOST": "localhost",
@@ -321,7 +324,7 @@ You can configure multiple database connections by adding additional MCP server 
 3. **Test Manually**: Run the server manually to check for errors:
    ```bash
    cd /path/to/pg-mcp
-   uv run python main.py
+   uv run python -m pg_mcp
    ```
 
 ### Database Connection Fails
@@ -402,7 +405,7 @@ Instead of putting all configuration in `claude_desktop_config.json`, you can us
       "command": "bash",
       "args": [
         "-c",
-        "cd /path/to/pg-mcp && source .env && uv run python main.py"
+        "cd /path/to/pg-mcp && source .env && uv run python -m pg_mcp"
       ]
     }
   }
@@ -427,7 +430,7 @@ If PostgreSQL is running on a non-standard port:
   "mcpServers": {
     "postgres": {
       "command": "uv",
-      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "main.py"],
+      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "-m", "pg_mcp"],
       "env": {
         "DATABASE_HOST": "localhost",
         "DATABASE_PORT": "5433",
@@ -448,7 +451,7 @@ To connect to a remote PostgreSQL server:
   "mcpServers": {
     "postgres": {
       "command": "uv",
-      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "main.py"],
+      "args": ["--directory", "/path/to/pg-mcp", "run", "python", "-m", "pg_mcp"],
       "env": {
         "DATABASE_HOST": "db.example.com",
         "DATABASE_PORT": "5432",

@@ -112,20 +112,7 @@ class RateLimiter:
         Use the async context manager to handle this automatically.
         """
         self._semaphore.release()
-        # Note: We use a try-except here because release() is not async
-        # but we need to update the counter. The counter update is not
-        # critical for correctness.
-        try:
-            loop = asyncio.get_running_loop()
-            _task = loop.create_task(self._decrement_counter())  # noqa: RUF006
-        except RuntimeError:
-            # No event loop running, just decrement directly (testing scenario)
-            self._active_count = max(0, self._active_count - 1)
-
-    async def _decrement_counter(self) -> None:
-        """Decrement active counter (internal helper)."""
-        async with self._lock:
-            self._active_count = max(0, self._active_count - 1)
+        self._active_count = max(0, self._active_count - 1)
 
     @asynccontextmanager
     async def __call__(

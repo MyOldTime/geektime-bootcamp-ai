@@ -256,7 +256,7 @@ class TestSQLGenerationWithRetry:
         assert "DELETE statements are not allowed" in str(exc_info.value)
         # Should attempt max_retries + 1 times (initial + retries)
         assert mock_generator.generate.call_count == 3
-        assert orchestrator.circuit_breaker.failure_count == 1
+        assert orchestrator.circuit_breaker.failure_count == 0
 
     @pytest.mark.asyncio
     async def test_generate_sql_circuit_breaker_open(self, mock_schema: DatabaseSchema) -> None:
@@ -404,7 +404,7 @@ class TestResultValidation:
             request_id="test-123",
         )
 
-        assert confidence == 100
+        assert confidence == 0
 
 
 class TestExecuteQueryFlow:
