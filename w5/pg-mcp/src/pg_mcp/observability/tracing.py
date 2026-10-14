@@ -4,31 +4,87 @@ This module provides request ID generation and context propagation throughout
 the query processing pipeline, enabling end-to-end tracing of requests.
 """
 
+from __future__ import annotations
+
 import contextvars
 import logging
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from functools import wraps
-from typing import Any, ParamSpec, TypeVar
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from pydantic import BaseModel
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Awaitable, Callable
+
+    from openai.types import CompletionUsage
 
 # Context variable for current request ID
 _request_id_var: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "request_id", default=None
 )
-_tokens_used_var: contextvars.ContextVar[int] = contextvars.ContextVar("tokens_used", default=0)
+
+
+@dataclass
+class _TokenUsage:
+    """One mutable accumulator per request, shared with that request's child tasks."""
+
+    tokens: int = 0
+    complete: bool = True
+
+
+_token_usage_var: contextvars.ContextVar[_TokenUsage | None] = contextvars.ContextVar(
+    "token_usage", default=None
+)
+
+
+def _current_token_usage() -> _TokenUsage:
+    usage = _token_usage_var.get()
+    if usage is None:
+        usage = _TokenUsage()
+        _token_usage_var.set(usage)
+    return usage
 
 
 def record_tokens_used(tokens: int) -> None:
     """Accumulate actual usage within the current request, including retries."""
-    if isinstance(tokens, int) and tokens >= 0:
-        _tokens_used_var.set(_tokens_used_var.get() + tokens)
+    if type(tokens) is int and tokens >= 0:
+        _current_token_usage().tokens += tokens
+
+
+def record_completion_usage(usage: CompletionUsage | None) -> None:
+    """Record provider usage, never estimating or inventing billable tokens.
+
+    Some compatible providers omit total_tokens or return zero while supplying
+    prompt_tokens and completion_tokens. Their reported components are a safe
+    fallback. Missing/malformed usage is explicitly marked incomplete.
+    """
+    total = getattr(usage, "total_tokens", None)
+    prompt = getattr(usage, "prompt_tokens", None)
+    completion = getattr(usage, "completion_tokens", None)
+    if type(total) is int and total > 0:
+        record_tokens_used(total)
+    elif type(prompt) is int and prompt >= 0 and type(completion) is int and completion >= 0:
+        record_tokens_used(prompt + completion)
+    elif type(total) is int and total == 0:
+        record_tokens_used(0)
+    else:
+        _current_token_usage().complete = False
 
 
 def get_tokens_used() -> int:
-    return _tokens_used_var.get()
+    """Return the sum reported by all received responses in the current request."""
+    usage = _token_usage_var.get()
+    return usage.tokens if usage is not None else 0
+
+
+def is_token_usage_complete() -> bool:
+    """Whether all received responses in the current request supplied usage."""
+    usage = _token_usage_var.get()
+    return usage.complete if usage is not None else True
+
 
 # Type variables for decorators
 P = ParamSpec("P")
@@ -124,11 +180,13 @@ async def request_context(request_id: str | None = None) -> AsyncIterator[str]:
         request_id = generate_request_id()
 
     token = _request_id_var.set(request_id)
-    usage_token = _tokens_used_var.set(0)
+    # ContextVar values are copied into child tasks. Mutate a request-owned
+    # object so gather/create_task/wait_for cannot silently lose reported usage.
+    usage_token = _token_usage_var.set(_TokenUsage())
     try:
         yield request_id
     finally:
-        _tokens_used_var.reset(usage_token)
+        _token_usage_var.reset(usage_token)
         _request_id_var.reset(token)
 
 

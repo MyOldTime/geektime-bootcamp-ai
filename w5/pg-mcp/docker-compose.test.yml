@@ -1,0 +1,16 @@
+# Isolated acceptance database; no application data or live API key is used.
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: pg-mcp-test-only
+    ports:
+      - "127.0.0.1:${PG_MCP_TEST_PORT:-55432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 1s
+      timeout: 3s
+      retries: 30
+    # Test data is disposable and never stored in the application volume.
+    tmpfs:
+      - /var/lib/postgresql/data

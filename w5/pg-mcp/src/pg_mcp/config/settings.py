@@ -6,9 +6,9 @@ sensible defaults.
 """
 
 import json
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import AliasChoices, Field, SecretStr, field_validator
+from pydantic import AliasChoices, Field, SecretStr, TypeAdapter, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -38,6 +38,21 @@ class DatabaseConfig(EnvironmentSettings):
     command_timeout: float = Field(
         default=30.0, ge=1.0, le=300.0, description="Command execution timeout in seconds"
     )
+
+    @field_validator("name", "host", "user")
+    @classmethod
+    def validate_connection_identity(cls, value: str) -> str:
+        """Do not let empty connection fields select a driver/environment default."""
+        if not value.strip() or "\x00" in value:
+            raise ValueError("Database name, host and user must be non-empty and contain no NUL")
+        return value
+
+    @model_validator(mode="after")
+    def validate_pool_bounds(self) -> Self:
+        """Reject an invalid pool before any runtime resources are opened."""
+        if self.min_pool_size > self.max_pool_size:
+            raise ValueError("min_pool_size must not exceed max_pool_size")
+        return self
 
     @property
     def dsn(self) -> str:
@@ -124,10 +139,14 @@ class SecurityConfig(EnvironmentSettings):
     def parse_blocked_functions(cls, v: str | list[str]) -> list[str]:
         """Parse comma-separated string or list."""
         if isinstance(v, str):
-            if v.strip().startswith("["):
-                return json.loads(v)
-            return [f.strip() for f in v.split(",") if f.strip()]
-        return v
+            if v.strip().startswith(("[", "{")):
+                v = json.loads(v)
+            else:
+                v = [f.strip() for f in v.split(",") if f.strip()]
+        names = TypeAdapter(list[str]).validate_python(v)
+        if any(not name.strip() for name in names):
+            raise ValueError("Blocked object names must not be empty")
+        return [name.strip() for name in names]
 
 
 class ValidationConfig(EnvironmentSettings):
@@ -246,6 +265,16 @@ class Settings(BaseSettings):
     cache: CacheConfig = Field(default_factory=CacheConfig)
     resilience: ResilienceConfig = Field(default_factory=ResilienceConfig)
     observability: ObservabilityConfig = Field(default_factory=ObservabilityConfig)
+
+    @field_validator("databases", mode="before")
+    @classmethod
+    def require_explicit_database_names(cls, value: Any) -> Any:
+        """A DATABASES entry must not silently inherit the legacy DATABASE_NAME."""
+        if isinstance(value, list):
+            for entry in value:
+                if isinstance(entry, dict) and "name" not in entry:
+                    raise ValueError("Every DATABASES entry must provide an explicit name")
+        return value
 
     @field_validator("databases")
     @classmethod

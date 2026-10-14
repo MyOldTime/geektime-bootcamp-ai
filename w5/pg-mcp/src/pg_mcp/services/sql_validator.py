@@ -29,16 +29,6 @@ class SQLValidator:
     # Allowed statement types at the top level (including set operations)
     ALLOWED_STATEMENT_TYPES: ClassVar = {exp.Select, exp.Union, exp.Intersect, exp.Except}
 
-    # Allowed top-level expressions (including CTEs)
-    ALLOWED_TOP_LEVEL: ClassVar = {
-        exp.Select,
-        exp.Union,
-        exp.Intersect,
-        exp.Except,
-        exp.With,
-        exp.Subquery,
-    }
-
     # Forbidden statement types
     FORBIDDEN_STATEMENT_TYPES: ClassVar = {
         exp.Insert,
@@ -181,6 +171,8 @@ class SQLValidator:
                     raise SecurityViolationError("EXPLAIN statements are not allowed")
                 # SQLGlot treats EXPLAIN as opaque text. Locate its inner statement
                 # using tokens (so comments and quoted strings cannot hide a write).
+                if statement.expression is None:
+                    raise SQLParseError("EXPLAIN must contain a query")
                 inner = str(statement.expression.this)
                 depth = 0
                 for token in sqlglot.tokenize(inner, read="postgres"):
@@ -207,18 +199,16 @@ class SQLValidator:
                     f"Command '{cmd_name}' is not allowed. Only SELECT queries are permitted."
                 )
 
-        # Handle CTE (WITH) statements - extract the main query
-        if isinstance(statement, exp.With):
-            # WITH statements are allowed, but we need to validate the main query
-            if statement.this:
-                main_query = statement.this
-            else:
-                raise SQLParseError("WITH statement has no main query")
-        else:
-            main_query = statement
+        # PostgreSQL folds unquoted identifiers, but quoted aliases "U" and "u"
+        # are distinct. Never collapse them into the same scope entry. Normalize
+        # directly so optimizer-control comments cannot disable this security step.
+        for identifier in statement.find_all(exp.Identifier):
+            if not identifier.args.get("quoted"):
+                identifier.set("this", identifier.name.lower())
 
-        # Perform security checks
-        if error := self._check_statement_type(main_query):
+        # SQLGlot attaches WITH to its SELECT/set-operation, rather than making
+        # WITH the root. Inspect the entire tree as well, including CTE bodies.
+        if error := self._check_statement_type(statement):
             raise SecurityViolationError(error)
 
         for node in statement.walk():
@@ -270,7 +260,7 @@ class SQLValidator:
         """
         # Find all function calls in the query
         for func in statement.find_all(exp.Func):
-            func_name = (func.name or func.sql_name()).lower()
+            func_name = (func.name or func.sql_name()).lower()  # type: ignore[no-untyped-call]
 
             if func_name in self.blocked_functions:
                 return f"Function '{func_name}' is blocked for security reasons"
@@ -311,7 +301,7 @@ class SQLValidator:
             return None
 
         for scope in traverse_scope(statement):
-            sources = {name.lower(): source for name, source in scope.sources.items()}
+            sources = scope.sources
             tables = [source for source in sources.values() if isinstance(source, exp.Table)]
             restricted = {
                 name
@@ -320,6 +310,17 @@ class SQLValidator:
                 or any(self._matches_table(table, name.rsplit(".", 1)[0]) for table in tables)
             }
             if restricted:
+                # USING identifiers and NATURAL joins are not exp.Column nodes,
+                # but PostgreSQL still reads those columns to compare rows.
+                restricted_names = {name.rsplit(".", 1)[-1] for name in restricted}
+                for join in scope.expression.args.get("joins") or []:
+                    if join.method == "NATURAL":
+                        return "NATURAL JOIN is not allowed with blocked columns; use explicit ON"
+                    for identifier in join.args.get("using") or []:
+                        if identifier.name.lower() in restricted_names:
+                            return (
+                                f"Access to column '{identifier.name}' in JOIN USING is not allowed"
+                            )
                 if any(table.args.get("alias") and table.args["alias"].columns for table in tables):
                     return "Table column aliases are not allowed with blocked columns"
                 # A wildcard or whole-row expression may expose every protected column.
@@ -331,7 +332,7 @@ class SQLValidator:
                     return "Wildcard projection is not allowed with blocked columns"
             for column in scope.columns:
                 name = column.name.lower()
-                if not column.table and name in sources and restricted:
+                if not column.table and column.name in sources and restricted:
                     return "Whole-row references are not allowed with blocked columns"
                 candidates = tables
                 if not column.table:
@@ -348,11 +349,7 @@ class SQLValidator:
                     source = None
                     while owner is not None:
                         source = next(
-                            (
-                                v
-                                for k, v in owner.sources.items()
-                                if k.lower() == column.table.lower()
-                            ),
+                            (v for k, v in owner.sources.items() if k == column.table),
                             None,
                         )
                         if source is not None:
@@ -394,13 +391,8 @@ class SQLValidator:
             if subquery.this:
                 inner_stmt = subquery.this
 
-                # Check if the inner statement is a forbidden type
-                for forbidden_type in self.FORBIDDEN_STATEMENT_TYPES:
-                    if isinstance(inner_stmt, forbidden_type):
-                        stmt_name = forbidden_type.__name__.upper()
-                        return f"{stmt_name} statements in subqueries are not allowed"
-
-                # Ensure it's a SELECT
+                # Writes were already rejected by the full-tree check above.
+                # Reject opaque/non-query subqueries that cannot be safely scoped.
                 if not isinstance(
                     inner_stmt, (exp.Select, exp.With, exp.Union, exp.Intersect, exp.Except)
                 ):

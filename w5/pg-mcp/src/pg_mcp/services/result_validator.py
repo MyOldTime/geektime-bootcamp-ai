@@ -12,7 +12,7 @@ from openai import AsyncOpenAI
 from pg_mcp.config.settings import OpenAIConfig, ValidationConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
 from pg_mcp.models.query import ResultValidationResult
-from pg_mcp.observability.tracing import record_tokens_used
+from pg_mcp.observability.tracing import record_completion_usage
 from pg_mcp.prompts.result_validation import (
     RESULT_VALIDATION_SYSTEM_PROMPT,
     build_validation_prompt,
@@ -131,8 +131,7 @@ class ResultValidator:
                 temperature=0.0,  # Use deterministic output for validation
                 response_format={"type": "json_object"},  # Ensure JSON response
             )
-            if response.usage:
-                record_tokens_used(response.usage.total_tokens)
+            record_completion_usage(response.usage)
 
             # Extract and parse the response
             if not response.choices:

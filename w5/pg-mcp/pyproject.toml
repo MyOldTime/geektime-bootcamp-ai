@@ -81,7 +81,7 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 addopts = "-v --tb=short"
 markers = [
-    "integration: marks tests as integration tests (require database and API key)",
+    "integration: requires a database; live API tests are separately opt-in",
 ]
 
 [tool.coverage.run]

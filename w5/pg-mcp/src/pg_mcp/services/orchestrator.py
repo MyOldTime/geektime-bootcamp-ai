@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from functools import partial
 from typing import Any, TypeVar
 
 from asyncpg import Pool
@@ -31,7 +32,12 @@ from pg_mcp.models.query import (
     ValidationResult,
 )
 from pg_mcp.observability.metrics import MetricsCollector
-from pg_mcp.observability.tracing import get_request_id, get_tokens_used, request_context
+from pg_mcp.observability.tracing import (
+    get_request_id,
+    get_tokens_used,
+    is_token_usage_complete,
+    request_context,
+)
 from pg_mcp.resilience.circuit_breaker import CircuitBreaker
 from pg_mcp.resilience.rate_limiter import MultiRateLimiter
 from pg_mcp.services.result_validator import ResultValidator
@@ -63,13 +69,19 @@ class QueryOrchestrator:
         self.sql_generator = sql_generator
         self.sql_validator = sql_validator
         # Legacy single-executor callers remain supported only for a single pool.
-        self.sql_executors = (
-            sql_executor
-            if isinstance(sql_executor, dict)
-            else dict.fromkeys(pools, sql_executor)
-            if len(pools) == 1
-            else {}
-        )
+        if isinstance(sql_executor, dict):
+            self.sql_executors = dict(sql_executor)
+        elif len(pools) <= 1:
+            self.sql_executors = dict.fromkeys(pools, sql_executor)
+        else:
+            raise ValueError("Multiple databases require a separate executor for each database")
+        if self.sql_executors.keys() != pools.keys():
+            raise ValueError("Database pools and executor mappings must have exactly the same keys")
+        for name, executor in self.sql_executors.items():
+            if isinstance(executor, SQLExecutor) and (
+                executor.pool is not pools[name] or executor.db_config.name != name
+            ):
+                raise ValueError(f"Database '{name}' is bound to the wrong executor")
         self.result_validator = result_validator
         self.schema_cache = schema_cache
         self.pools = pools
@@ -155,6 +167,12 @@ class QueryOrchestrator:
                 )
             response.request_id = request_id
             response.tokens_used = get_tokens_used()
+            response.token_usage_complete = is_token_usage_complete()
+            if not response.token_usage_complete:
+                warning = (
+                    "LLM usage unavailable for some responses; tokens_used is a reported subtotal"
+                )
+                response.warning = f"{response.warning}; {warning}" if response.warning else warning
             return response
 
     async def _execute(
@@ -290,8 +308,8 @@ class QueryOrchestrator:
             try:
                 sql = await self._call_llm(
                     "generate",
-                    lambda previous_sql=previous_sql,
-                    feedback=feedback: self.sql_generator.generate(
+                    partial(
+                        self.sql_generator.generate,
                         question=question,
                         schema=schema,
                         previous_attempt=previous_sql,

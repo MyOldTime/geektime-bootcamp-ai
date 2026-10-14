@@ -177,7 +177,8 @@ async def query(
             - data (dict): Query results if executed (columns, rows, row_count, etc.)
             - error (dict): Error information if query failed
             - confidence (int): Confidence score (0-100) for result quality
-            - tokens_used (int): Number of LLM tokens consumed
+            - tokens_used (int): Reported tokens across generation, retries and validation
+            - token_usage_complete (bool): All received LLM responses supplied usable usage
 
     Examples:
         >>> # Get query results
@@ -207,8 +208,10 @@ async def query(
     """
     started = time.monotonic()
     async with request_context() as request_id:
+        orchestrator = _orchestrator
+        request = None
         error = None
-        if _orchestrator is None:
+        if orchestrator is None:
             error = ErrorDetail(code="SERVER_NOT_INITIALIZED", message="Server is not initialized")
         elif return_type not in ("sql", "result"):
             error = ErrorDetail(
@@ -223,7 +226,7 @@ async def query(
                 )
             except ValueError:
                 error = ErrorDetail(code="INVALID_REQUEST", message="Invalid request parameters")
-        if error is not None:
+        if error is not None or orchestrator is None or request is None:
             if _metrics:
                 _metrics.increment_query_request("invalid_request", "__unknown__")
                 _metrics.query_duration.observe(time.monotonic() - started)
@@ -233,7 +236,7 @@ async def query(
                 confidence=0,
                 request_id=request_id,
             ).to_dict()
-        response = await _orchestrator.execute_query(request)
+        response = await orchestrator.execute_query(request)
         return response.to_dict()
 
 

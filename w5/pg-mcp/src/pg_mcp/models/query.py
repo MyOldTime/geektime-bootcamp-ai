@@ -27,7 +27,7 @@ class QueryRequest(BaseModel):
         description="Natural language question about the data",
     )
     database: str | None = Field(
-        None, description="Target database name (uses default if not specified)"
+        default=None, description="Target database name (required when multiple databases exist)"
     )
     return_type: ReturnType = Field(
         default=ReturnType.RESULT, description="Whether to return SQL or execute and return results"
@@ -64,7 +64,9 @@ class ValidationResult(BaseModel):
     uses_blocked_functions: list[str] = Field(
         default_factory=list, description="List of blocked functions found in SQL"
     )
-    error_message: str | None = Field(None, description="Validation error message if invalid")
+    error_message: str | None = Field(
+        default=None, description="Validation error message if invalid"
+    )
 
     @property
     def is_safe(self) -> bool:
@@ -96,7 +98,9 @@ class ResultValidationResult(BaseModel):
         description="Confidence score (0-100) that results match the question",
     )
     explanation: str = Field(..., description="Explanation of the validation assessment")
-    suggestion: str | None = Field(None, description="Optional suggestion for improving the query")
+    suggestion: str | None = Field(
+        default=None, description="Optional suggestion for improving the query"
+    )
     is_acceptable: bool = Field(
         ..., description="Whether results are acceptable based on confidence threshold"
     )
@@ -143,21 +147,28 @@ class ErrorDetail(BaseModel):
 
     code: str = Field(..., description="Error code identifier")
     message: str = Field(..., description="Human-readable error message")
-    details: dict[str, Any] | None = Field(None, description="Additional error context")
+    details: dict[str, Any] | None = Field(default=None, description="Additional error context")
 
 
 class QueryResponse(BaseModel):
     """Complete query response to client."""
 
     success: bool = Field(..., description="Whether query succeeded")
-    generated_sql: str | None = Field(None, description="Generated SQL query")
-    validation: ValidationResult | None = Field(None, description="SQL validation results")
-    data: QueryResult | None = Field(None, description="Query result data (if executed)")
-    error: ErrorDetail | None = Field(None, description="Error information if failed")
+    generated_sql: str | None = Field(default=None, description="Generated SQL query")
+    validation: ValidationResult | None = Field(default=None, description="SQL validation results")
+    data: QueryResult | None = Field(default=None, description="Query result data (if executed)")
+    error: ErrorDetail | None = Field(default=None, description="Error information if failed")
     confidence: int = Field(
         default=100, ge=0, le=100, description="Confidence score of generated SQL (0-100)"
     )
-    tokens_used: int | None = Field(None, ge=0, description="LLM tokens used for generation")
+    tokens_used: int = Field(
+        default=0,
+        ge=0,
+        description="Reported LLM tokens across generation, corrections and result validation",
+    )
+    token_usage_complete: bool = Field(
+        default=True, description="Whether every received LLM response supplied usable token usage"
+    )
 
     request_id: str | None = None
     warning: str | None = None
@@ -168,14 +179,7 @@ class QueryResponse(BaseModel):
         Returns:
             dict: Dictionary representation compatible with MCP protocol.
         """
-        # Use model_dump but ensure tokens_used is always present
-        result = self.model_dump(mode="json", exclude_none=False)
-
-        # Ensure tokens_used is always present (use 0 if None)
-        if result.get("tokens_used") is None:
-            result["tokens_used"] = 0
-
-        return result
+        return self.model_dump(mode="json", exclude_none=False)
 
     @model_validator(mode="after")
     def validate_response(self) -> "QueryResponse":

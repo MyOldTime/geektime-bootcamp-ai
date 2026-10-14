@@ -4,7 +4,15 @@ This module implements comprehensive metrics collection using prometheus_client,
 tracking query requests, LLM calls, database operations, and system health.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram, start_http_server
+
+if TYPE_CHECKING:
+    from threading import Thread
+    from wsgiref.simple_server import WSGIServer
 
 
 class MetricsCollector:
@@ -29,8 +37,8 @@ class MetricsCollector:
 
     def __init__(self, registry: CollectorRegistry | None = None) -> None:
         self.registry = registry if registry is not None else CollectorRegistry()
-        self._server = None
-        self._server_thread = None
+        self._server: WSGIServer | None = None
+        self._server_thread: Thread | None = None
         self._initialize_metrics()
 
     def _initialize_metrics(self) -> None:
@@ -125,7 +133,8 @@ class MetricsCollector:
         if self._server is not None:
             self._server.shutdown()
             self._server.server_close()
-            self._server_thread.join(timeout=5)
+            if self._server_thread is not None:
+                self._server_thread.join(timeout=5)
             self._server = self._server_thread = None
 
     def increment_query_request(self, status: str, database: str) -> None:

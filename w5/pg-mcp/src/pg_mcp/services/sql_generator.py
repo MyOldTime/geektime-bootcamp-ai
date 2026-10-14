@@ -11,7 +11,7 @@ from openai import AsyncOpenAI
 
 from pg_mcp.config.settings import OpenAIConfig
 from pg_mcp.models.errors import LLMError, LLMTimeoutError, LLMUnavailableError
-from pg_mcp.observability.tracing import record_tokens_used
+from pg_mcp.observability.tracing import record_completion_usage
 from pg_mcp.prompts.sql_generation import SQL_GENERATION_SYSTEM_PROMPT, build_user_prompt
 
 if TYPE_CHECKING:
@@ -111,8 +111,7 @@ class SQLGenerator:
                 temperature=self.config.temperature,
                 max_tokens=self.config.max_tokens,
             )
-            if response.usage:
-                record_tokens_used(response.usage.total_tokens)
+            record_completion_usage(response.usage)
         except TimeoutError as e:
             raise LLMTimeoutError(
                 message=f"OpenAI API request timed out after {self.config.timeout}s",
@@ -189,7 +188,7 @@ class SQLGenerator:
 
         # Strategy 1: Match ```sql ... ``` or ``` ... ``` code blocks
         code_block_pattern = r"```(?:sql)?\s*\n?(.*?)\n?```"
-        matches = re.findall(code_block_pattern, content, re.DOTALL | re.IGNORECASE)
+        matches: list[str] = re.findall(code_block_pattern, content, re.DOTALL | re.IGNORECASE)
 
         if matches:
             sql = matches[0].strip()

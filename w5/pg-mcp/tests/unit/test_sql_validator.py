@@ -491,7 +491,8 @@ class TestExplainStatements:
     def test_explain_writes_rejected(self, prefix: str) -> None:
         validator = SQLValidator(config=SecurityConfig(allow_explain=True))
         with pytest.raises(SecurityViolationError):
-            validator.validate_or_raise(f"{prefix} DELETE FROM users")
+            # Deliberately construct a forbidden query for the parser; never execute it.
+            validator.validate_or_raise(f"{prefix} DELETE FROM users")  # noqa: S608
 
 
 class TestValidatorHelperMethods:

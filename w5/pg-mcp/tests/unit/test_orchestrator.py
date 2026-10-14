@@ -42,7 +42,7 @@ class TestDatabaseResolution:
         return QueryOrchestrator(
             sql_generator=MagicMock(),
             sql_validator=MagicMock(),
-            sql_executor=MagicMock(),
+            sql_executor={name: MagicMock() for name in mock_pools},
             result_validator=MagicMock(),
             schema_cache=MagicMock(),
             pools=mock_pools,
